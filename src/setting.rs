@@ -48,31 +48,21 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-mod app;
-mod library;
-mod setting;
+use serde::{Deserialize, Serialize};
 
 //================================================================
 
-use crate::app::*;
-use eframe::egui;
+#[derive(Serialize, Deserialize)]
+pub struct Setting {
+    pub size: (f32, f32),
+    pub smooth: bool,
+}
 
-//================================================================
-
-fn main() -> eframe::Result {
-    let app = Box::<App>::default();
-
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([app.state.setting.size.0, app.state.setting.size.1]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Melodix",
-        options,
-        Box::new(|cc| {
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(app)
-        }),
-    )
+impl Default for Setting {
+    fn default() -> Self {
+        Self {
+            size: (1280.0, 720.0),
+            smooth: true,
+        }
+    }
 }
