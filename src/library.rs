@@ -51,6 +51,8 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+use symphonia::core::errors::Error;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -119,6 +121,46 @@ impl Default for Library {
                     }
                 }
 
+                // Find the first audio track with a known (decodeable) codec.
+                let track = probed
+                    .format
+                    .tracks()
+                    .iter()
+                    .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+                    .unwrap();
+
+                // Use the default options for the decoder.
+                let dec_opts: DecoderOptions = Default::default();
+
+                // Calculate the needed size for our sample vector
+                // We do this now as we will borrow track in the decoder
+                let samples_capacity: usize = if let Some(n_frames) = track.codec_params.n_frames {
+                    n_frames as usize
+                } else {
+                    0
+                };
+
+                // Create a decoder for the track.
+                let mut decoder = symphonia::default::get_codecs()
+                    .make(&track.codec_params, &dec_opts)
+                    .unwrap();
+
+                // Create sample buffer and retrieve sample rate
+                let rate = {
+                    // Read first packet and determine sample buffer size
+                    println!("enter : {:?}", entry.path());
+
+                    let packet = probed.format.next_packet().unwrap();
+                    if let Ok(d_p) = decoder.decode(&packet) {
+                        println!("V : {:?}", entry.path());
+                        let spec = *d_p.spec();
+                        spec.rate as usize
+                    } else {
+                        println!("X : {:?}", entry.path());
+                        1
+                    }
+                };
+
                 let file_artist = file_artist.unwrap();
                 let file_album = file_album.unwrap();
                 let file_song = file_song.unwrap();
@@ -130,6 +172,7 @@ impl Default for Library {
                 album.list_song.push(Song {
                     name: file_song,
                     path: entry.path().display().to_string(),
+                    time: samples_capacity / rate,
                     track: file_song_track,
                 });
             }
@@ -175,5 +218,6 @@ pub struct Album {
 pub struct Song {
     pub name: String,
     pub path: String,
+    pub time: usize,
     pub track: usize,
 }

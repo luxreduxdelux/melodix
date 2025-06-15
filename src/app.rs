@@ -59,8 +59,13 @@ use rodio::OutputStream;
 use rodio::OutputStreamHandle;
 use rodio::Sink;
 use serde::{Deserialize, Serialize};
+use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, PlatformConfig};
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::channel;
+use std::thread;
+use std::time::Duration;
 
 //================================================================
 
@@ -104,11 +109,14 @@ pub struct App {
     search_song: String,
     current_artist: Option<String>,
     current_album: Option<String>,
-    current_song: Option<String>,
+    current_song: Option<(String, usize)>,
+    current_time: Option<usize>,
     stream: OutputStream,
     handle: OutputStreamHandle,
     sink: Sink,
     song: Option<Song>,
+    media: MediaControls,
+    event: Receiver<MediaControlEvent>,
 }
 
 impl App {
@@ -134,6 +142,33 @@ impl Default for App {
             .call::<()>(())
             .unwrap();
 
+        let config = PlatformConfig {
+            dbus_name: "melodix",
+            display_name: "Melodix",
+            hwnd: None,
+        };
+
+        let mut media = MediaControls::new(config).unwrap();
+
+        let (tx, event) = channel();
+
+        // The closure must be Send and have a static lifetime.
+        media
+            .attach(move |event: MediaControlEvent| {
+                tx.send(event).unwrap();
+            })
+            .unwrap();
+
+        // Update the media metadata.
+        media
+            .set_metadata(MediaMetadata {
+                title: Some("Souvlaki Space Station"),
+                artist: Some("Slowdive"),
+                album: Some("Souvlaki"),
+                ..Default::default()
+            })
+            .unwrap();
+
         Self {
             state: State::default(),
             lua,
@@ -147,16 +182,36 @@ impl Default for App {
             current_artist: None,
             current_album: None,
             current_song: None,
+            current_time: None,
             stream,
             handle,
             sink,
             song: None,
+            media,
+            event,
         }
     }
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
+        if let Ok(event) = self.event.try_recv() {
+            match event {
+                MediaControlEvent::Toggle => {
+                    if self.sink.is_paused() {
+                        self.sink.play();
+                    } else {
+                        self.sink.pause();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after_secs(1.0);
+
         egui::TopBottomPanel::top("status")
             .min_height(64.0)
             .max_height(64.0)
@@ -171,92 +226,168 @@ impl eframe::App for App {
                             ui.add_space(8.0);
                             ui.label(self.current_artist.as_ref().unwrap());
                             ui.label(self.current_album.as_ref().unwrap());
-                            ui.label(self.current_song.as_ref().unwrap());
+                            ui.label(self.current_song.as_ref().unwrap().0.clone());
                         });
 
                         ui.separator();
-                    }
 
-                    ui.add(egui::Button::opt_image_and_text(
-                        Some(
-                            egui::Image::new(Self::IMAGE_SKIP_A)
-                                .fit_to_exact_size(Vec2::new(32.0, 32.0)),
-                        ),
-                        None,
-                    ))
-                    .clicked();
+                        ui.add(egui::Button::opt_image_and_text(
+                            Some(
+                                egui::Image::new(Self::IMAGE_SKIP_A)
+                                    .fit_to_exact_size(Vec2::new(32.0, 32.0)),
+                            ),
+                            None,
+                        ))
+                        .clicked();
 
-                    if self.sink.is_paused() {
-                        if ui
-                            .add(egui::Button::opt_image_and_text(
-                                Some(
-                                    egui::Image::new(Self::IMAGE_PLAY)
-                                        .fit_to_exact_size(Vec2::new(32.0, 32.0)),
-                                ),
-                                None,
-                            ))
-                            .clicked()
-                        {
-                            self.sink.play();
-
-                            self.table
-                                .get::<mlua::Function>("play")
-                                .unwrap()
-                                .call::<()>((
-                                    self.current_artist.clone(),
-                                    self.current_album.clone(),
-                                    self.current_song.clone(),
+                        if self.sink.is_paused() {
+                            if ui
+                                .add(egui::Button::opt_image_and_text(
+                                    Some(
+                                        egui::Image::new(Self::IMAGE_PLAY)
+                                            .fit_to_exact_size(Vec2::new(32.0, 32.0)),
+                                    ),
+                                    None,
                                 ))
-                                .unwrap();
-                        }
-                    } else {
-                        if ui
-                            .add(egui::Button::opt_image_and_text(
-                                Some(
-                                    egui::Image::new(Self::IMAGE_PAUSE)
-                                        .fit_to_exact_size(Vec2::new(32.0, 32.0)),
-                                ),
-                                None,
-                            ))
-                            .clicked()
-                        {
-                            self.sink.pause();
+                                .clicked()
+                            {
+                                self.sink.play();
 
-                            self.table
-                                .get::<mlua::Function>("pause")
-                                .unwrap()
-                                .call::<()>((
-                                    self.current_artist.clone(),
-                                    self.current_album.clone(),
-                                    self.current_song.clone(),
+                                self.table
+                                    .get::<mlua::Function>("play")
+                                    .unwrap()
+                                    .call::<()>((
+                                        self.current_artist.clone(),
+                                        self.current_album.clone(),
+                                        self.current_song.clone().unwrap().0,
+                                    ))
+                                    .unwrap();
+                            }
+                        } else {
+                            if ui
+                                .add(egui::Button::opt_image_and_text(
+                                    Some(
+                                        egui::Image::new(Self::IMAGE_PAUSE)
+                                            .fit_to_exact_size(Vec2::new(32.0, 32.0)),
+                                    ),
+                                    None,
                                 ))
-                                .unwrap();
+                                .clicked()
+                            {
+                                self.sink.pause();
+
+                                self.table
+                                    .get::<mlua::Function>("pause")
+                                    .unwrap()
+                                    .call::<()>((
+                                        self.current_artist.clone(),
+                                        self.current_album.clone(),
+                                        self.current_song.clone().unwrap(),
+                                    ))
+                                    .unwrap();
+                            }
                         }
+
+                        ui.add(egui::Button::opt_image_and_text(
+                            Some(
+                                egui::Image::new(Self::IMAGE_SKIP_B)
+                                    .fit_to_exact_size(Vec2::new(32.0, 32.0)),
+                            ),
+                            None,
+                        ))
+                        .clicked();
+
+                        let mut seek = self.sink.get_pos().as_secs();
+
+                        if ui
+                            .add(
+                                Slider::new(
+                                    &mut seek,
+                                    0..=self.current_time.unwrap().try_into().unwrap(),
+                                )
+                                .trailing_fill(true)
+                                .show_value(false),
+                            )
+                            .changed()
+                        {
+                            self.sink.try_seek(Duration::from_secs(seek)).unwrap();
+                        }
+
+                        if self.sink.len() == 0 {
+                            let c_artist = self
+                                .state
+                                .library
+                                .map_artist
+                                .get(self.current_artist.as_ref().unwrap())
+                                .unwrap();
+                            let c_album = c_artist
+                                .map_album
+                                .get(self.current_album.as_ref().unwrap())
+                                .unwrap();
+                            if let Some(song) = c_album
+                                .list_song
+                                .get(self.current_song.as_ref().unwrap().1 + 1)
+                            {
+                                self.sink.stop();
+                                let file = std::fs::File::open(&song.path).unwrap();
+                                self.sink
+                                    .append(rodio::Decoder::new(BufReader::new(file)).unwrap());
+                            }
+                        }
+
+                        let time_a = self.sink.get_pos().as_secs() / 60;
+                        let time_b = self.sink.get_pos().as_secs() % 60;
+
+                        let time_a = {
+                            if time_a < 10 {
+                                format!("0{time_a}")
+                            } else {
+                                time_a.to_string()
+                            }
+                        };
+
+                        let time_b = {
+                            if time_b < 10 {
+                                format!("0{time_b}")
+                            } else {
+                                time_b.to_string()
+                            }
+                        };
+
+                        let song_time_a = self.current_time.unwrap() / 60;
+                        let song_time_b = self.current_time.unwrap() % 60;
+
+                        let song_time_a = {
+                            if song_time_a < 10 {
+                                format!("0{song_time_a}")
+                            } else {
+                                song_time_a.to_string()
+                            }
+                        };
+
+                        let song_time_b = {
+                            if song_time_b < 10 {
+                                format!("0{song_time_b}")
+                            } else {
+                                song_time_b.to_string()
+                            }
+                        };
+
+                        ui.label(format!(
+                            "{}:{}/{}:{}",
+                            time_a, time_b, song_time_a, song_time_b
+                        ));
                     }
-
-                    ui.add(egui::Button::opt_image_and_text(
-                        Some(
-                            egui::Image::new(Self::IMAGE_SKIP_B)
-                                .fit_to_exact_size(Vec2::new(32.0, 32.0)),
-                        ),
-                        None,
-                    ))
-                    .clicked();
-
-                    ui.add(
-                        Slider::new(&mut 0.0, -1.0..=1.0)
-                            .trailing_fill(true)
-                            .show_value(false),
-                    );
                 });
             });
 
         egui::SidePanel::left("panel_0")
             .resizable(true)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.text_edit_singleline(&mut self.search_artist);
+                ui.add_space(6.0);
+                ui.text_edit_singleline(&mut self.search_artist);
 
+                egui::ScrollArea::vertical().show(ui, |ui| {
                     for i in self.state.library.map_artist.keys() {
                         if i.to_lowercase()
                             .contains(&self.search_artist.to_lowercase().trim())
@@ -270,14 +401,15 @@ impl eframe::App for App {
         egui::SidePanel::right("panel_1")
             .resizable(true)
             .show(ctx, |ui| {
+                ui.add_space(6.0);
+                ui.text_edit_singleline(&mut self.search_song);
+
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if let Some(artist) = self.state.library.map_artist.get(&self.select_artist)
                         {
                             if let Some(album) = artist.map_album.get(&self.select_album) {
-                                ui.text_edit_singleline(&mut self.search_song);
-
                                 for (i, song) in album.list_song.iter().enumerate() {
                                     if song
                                         .name
@@ -293,9 +425,11 @@ impl eframe::App for App {
                                             self.sink.append(
                                                 rodio::Decoder::new(BufReader::new(file)).unwrap(),
                                             );
+
                                             self.current_artist = Some(self.select_artist.clone());
                                             self.current_album = Some(self.select_album.clone());
-                                            self.current_song = Some(song.name.clone());
+                                            self.current_song = Some((song.name.clone(), i));
+                                            self.current_time = Some(song.time);
 
                                             self.table
                                                 .get::<mlua::Function>("play")
@@ -303,7 +437,7 @@ impl eframe::App for App {
                                                 .call::<()>((
                                                     self.current_artist.clone(),
                                                     self.current_album.clone(),
-                                                    self.current_song.clone(),
+                                                    self.current_song.clone().unwrap().0,
                                                 ))
                                                 .unwrap();
                                         }
@@ -315,10 +449,10 @@ impl eframe::App for App {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.text_edit_singleline(&mut self.search_album);
+
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if let Some(artist) = self.state.library.map_artist.get(&self.select_artist) {
-                    ui.text_edit_singleline(&mut self.search_album);
-
                     for i in artist.map_album.keys() {
                         if i.to_lowercase()
                             .contains(&self.search_album.to_lowercase().trim())
