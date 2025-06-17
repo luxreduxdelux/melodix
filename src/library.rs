@@ -148,15 +148,11 @@ impl Default for Library {
                 // Create sample buffer and retrieve sample rate
                 let rate = {
                     // Read first packet and determine sample buffer size
-                    println!("enter : {:?}", entry.path());
-
                     let packet = probed.format.next_packet().unwrap();
                     if let Ok(d_p) = decoder.decode(&packet) {
-                        println!("V : {:?}", entry.path());
                         let spec = *d_p.spec();
                         spec.rate as usize
                     } else {
-                        println!("X : {:?}", entry.path());
                         1
                     }
                 };
@@ -168,6 +164,23 @@ impl Default for Library {
 
                 let artist = map_artist.entry(file_artist).or_default();
                 let album = artist.map_album.entry(file_album).or_default();
+
+                // TO-DO should really leave this up until after the user has selected the album.
+                if album.icon.is_none() {
+                    for entry in std::fs::read_dir(entry.path().parent().unwrap()).unwrap() {
+                        let entry = entry.unwrap().path();
+
+                        if entry.is_file() {
+                            let data = std::fs::read(&entry).unwrap();
+
+                            if image::guess_format(&data).is_ok() {
+                                println!("Loading cover...{:?}", entry);
+                                album.icon = Some(entry.display().to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
 
                 album.list_song.push(Song {
                     name: file_song,
@@ -199,16 +212,18 @@ impl Default for Library {
 
 //================================================================
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {
+    pub name: String,
     pub map_album: HashMap<String, Album>,
 }
 
 //================================================================
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Album {
-    pub icon: Option<u8>,
+    pub name: String,
+    pub icon: Option<String>,
     pub list_song: Vec<Song>,
 }
 

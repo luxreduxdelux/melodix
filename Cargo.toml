@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+mlua        = { version = "0.10.5", features = ["lua54", "vendored", "send"]                       }
 eframe      = { version = "0.31.1"                                                         }
-egui_extras = { version = "0.31.1", features = ["image"]                                   }
+egui_extras = { version = "0.31.1", features = ["file", "image"]                           }
+rodio       = { version = "0.20.1", default-features = false, features = ["symphonia-all"] }
 image       = { version = "0.25.6", features = ["jpeg", "png"]                             }
+souvlaki    = { version = "0.8.2"                                                          }
 symphonia   = { version = "0.5.4",  features = ["all", "opt-simd"]                         }
 postcard    = { version = "1.0.0",  features = ["alloc"]                                   }
 serde       = { version = "1.0",    features = ["derive"]                                  }
 walkdir     = { version = "2"                                                              }
-rodio       = { version = "0.20.1", default-features = false, features = ["symphonia-all"] }
-mlua        = { version = "0.10.5", features = ["lua54", "vendored"]                       }
-souvlaki    = { version = "0.8.2"                                                          }
+rfd         = { version = "0.15.3"                                                         }

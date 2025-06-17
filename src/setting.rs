@@ -48,21 +48,30 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 //================================================================
 
 #[derive(Serialize, Deserialize)]
+pub enum ScriptSetting {
+    String(String),
+    Number(f32),
+    Boolean(bool),
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct Setting {
     pub size: (f32, f32),
-    pub smooth: bool,
+    pub script_setting: HashMap<String, HashMap<String, ScriptSetting>>,
 }
 
 impl Default for Setting {
     fn default() -> Self {
         Self {
             size: (1280.0, 720.0),
-            smooth: true,
+            script_setting: HashMap::default(),
         }
     }
 }
