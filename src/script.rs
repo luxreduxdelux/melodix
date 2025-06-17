@@ -48,32 +48,75 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-mod app;
-mod library;
-mod script;
-mod setting;
-
-//================================================================
-
 use crate::app::*;
-use eframe::egui;
+use crate::setting::*;
+
+use mlua::prelude::*;
 
 //================================================================
 
-fn main() -> eframe::Result {
-    let app = Box::<App>::default();
+pub struct Script {
+    pub lua: Lua,
+    pub script_list: Vec<mlua::Table>,
+}
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([app.state.setting.size.0, app.state.setting.size.1]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Melodix",
-        options,
-        Box::new(|cc| {
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(app)
-        }),
-    )
+impl Script {
+    const PATH_SCRIPT: &'static str = "script/";
+    pub const CALL_BEGIN: &'static str = "begin";
+    pub const CALL_CLOSE: &'static str = "close";
+    pub const CALL_LOOP: &'static str = "loop";
+    pub const CALL_SEEK: &'static str = "seek";
+    pub const CALL_STOP: &'static str = "stop";
+    pub const CALL_PLAY: &'static str = "play";
+    pub const CALL_SKIP_A: &'static str = "skip_a";
+    pub const CALL_SKIP_B: &'static str = "skip_b";
+    pub const CALL_PAUSE: &'static str = "pause";
+
+    pub fn new(setting: &Setting) -> Self {
+        let lua = Lua::new();
+        let mut script_list = Vec::new();
+
+        for file in std::fs::read_dir(Self::PATH_SCRIPT).unwrap() {
+            let file = file.unwrap().path();
+            let file = std::fs::read_to_string(file).unwrap();
+
+            match lua.load(file).eval::<mlua::Table>() {
+                Ok(value) => {
+                    // TO-DO load script data from melodix.data
+                    /*
+                    let script_name = value.get::<String>("name").unwrap();
+
+                    if let Ok(set) = value.get::<mlua::Table>("setting")
+                        && let Some(entry) = setting.script_setting.get(&script_name)
+                    {
+                        for pair in set.pairs::<String, mlua::Value>() {
+                            let (key, value) = pair.unwrap();
+                        }
+                    }
+                    */
+
+                    script_list.push(value);
+                }
+                Err(message) => {
+                    App::error(&message.to_string());
+                }
+            };
+        }
+
+        let script = Self { lua, script_list };
+
+        script.call(Self::CALL_BEGIN, ());
+
+        script
+    }
+
+    pub fn call<M: IntoLuaMulti + Copy>(&self, entry: &'static str, member: M) {
+        for script in &self.script_list {
+            if let Ok(function) = script.get::<mlua::Function>(entry) {
+                if let Err(error) = function.call::<()>((script, member)) {
+                    App::error(&error.to_string());
+                }
+            }
+        }
+    }
 }
