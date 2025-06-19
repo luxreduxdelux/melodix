@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mlua        = { version = "0.10.5", features = ["lua54", "vendored", "send"]                       }
+mlua        = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize"]      }
 eframe      = { version = "0.31.1"                                                         }
 egui_extras = { version = "0.31.1", features = ["file", "image"]                           }
 rodio       = { version = "0.20.1", default-features = false, features = ["symphonia-all"] }

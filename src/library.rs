@@ -63,7 +63,7 @@ use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize)]
 pub struct Library {
-    pub map_artist: HashMap<String, Artist>,
+    pub list_artist: Vec<Artist>,
 }
 
 impl Default for Library {
@@ -71,100 +71,29 @@ impl Default for Library {
         let mut map_artist: HashMap<String, Artist> = HashMap::new();
         let mut icon: Option<u8> = None;
 
-        for entry in WalkDir::new("/home/think/Music/") {
-            let entry = entry.unwrap();
-
-            // Open the media source.
-            let src = std::fs::File::open(entry.path()).expect("failed to open media");
-
-            // Create the media source stream.
-            let mss = MediaSourceStream::new(Box::new(src), Default::default());
-
-            // Create a probe hint using the file's extension. [Optional]
-            let mut hint = Hint::new();
-            hint.with_extension("mp3");
-
-            // Use the default options for metadata and format readers.
-            let meta_opts: MetadataOptions = Default::default();
-            let fmt_opts: FormatOptions = Default::default();
-
-            // Probe the media source.
-            if let Ok(mut probed) =
-                symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts)
-            {
-                let mut file_artist: Option<String> = None;
-                let mut file_album: Option<String> = None;
-                let mut file_song: Option<String> = None;
-                let mut file_song_track: Option<usize> = None;
-
-                if let Some(revision) = probed.metadata.get().as_ref().and_then(|m| m.current()) {
-                    for tag in revision.tags() {
-                        //println!("{}", tag);
-
-                        if let Some(key) = tag.std_key {
-                            match key {
-                                symphonia::core::meta::StandardTagKey::Artist => {
-                                    file_artist = Some(tag.value.to_string())
-                                }
-                                symphonia::core::meta::StandardTagKey::Album => {
-                                    file_album = Some(tag.value.to_string())
-                                }
-                                symphonia::core::meta::StandardTagKey::TrackTitle => {
-                                    file_song = Some(tag.value.to_string())
-                                }
-                                symphonia::core::meta::StandardTagKey::TrackNumber => {
-                                    file_song_track = Some(tag.value.to_string().parse().unwrap());
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-
-                // Find the first audio track with a known (decodeable) codec.
-                let track = probed
-                    .format
-                    .tracks()
-                    .iter()
-                    .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-                    .unwrap();
-
-                // Use the default options for the decoder.
-                let dec_opts: DecoderOptions = Default::default();
-
-                // Calculate the needed size for our sample vector
-                // We do this now as we will borrow track in the decoder
-                let samples_capacity: usize = if let Some(n_frames) = track.codec_params.n_frames {
-                    n_frames as usize
-                } else {
-                    0
-                };
-
-                // Create a decoder for the track.
-                let mut decoder = symphonia::default::get_codecs()
-                    .make(&track.codec_params, &dec_opts)
-                    .unwrap();
-
-                // Create sample buffer and retrieve sample rate
-                let rate = {
-                    // Read first packet and determine sample buffer size
-                    let packet = probed.format.next_packet().unwrap();
-                    if let Ok(d_p) = decoder.decode(&packet) {
-                        let spec = *d_p.spec();
-                        spec.rate as usize
+        for entry in WalkDir::new("~/Music") {
+            if let Ok((artist, album, song)) = Song::new(entry.unwrap().path().to_str().unwrap()) {
+                let artist = {
+                    if let Some(artist) = artist {
+                        map_artist.entry(artist.clone()).or_insert(Artist {
+                            name: artist,
+                            list_album: vec![],
+                        })
                     } else {
-                        1
+                        map_artist
+                            .entry("< Unknown Artist >".to_string())
+                            .or_insert(Artist {
+                                name: "< Unknown Artist >".to_string(),
+                                list_album: vec![],
+                            })
                     }
                 };
 
-                let file_artist = file_artist.unwrap();
-                let file_album = file_album.unwrap();
-                let file_song = file_song.unwrap();
-                let file_song_track = file_song_track.unwrap();
+                let album = album.unwrap_or("< Unknown Album >".to_string());
 
-                let artist = map_artist.entry(file_artist).or_default();
-                let album = artist.map_album.entry(file_album).or_default();
+                artist.insert_song(&album, song);
 
+                /*
                 // TO-DO should really leave this up until after the user has selected the album.
                 if album.icon.is_none() {
                     for entry in std::fs::read_dir(entry.path().parent().unwrap()).unwrap() {
@@ -188,9 +117,11 @@ impl Default for Library {
                     time: samples_capacity / rate,
                     track: file_song_track,
                 });
+                */
             }
         }
 
+        /*
         for artist in map_artist.values_mut() {
             for album in artist.map_album.values_mut() {
                 album.list_song.sort_by(|a, b| {
@@ -205,8 +136,11 @@ impl Default for Library {
                 });
             }
         }
+        */
 
-        Self { map_artist }
+        Self {
+            list_artist: map_artist.values().cloned().collect(),
+        }
     }
 }
 
@@ -215,7 +149,24 @@ impl Default for Library {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {
     pub name: String,
-    pub map_album: HashMap<String, Album>,
+    pub list_album: Vec<Album>,
+}
+
+impl Artist {
+    pub fn insert_song(&mut self, album: &str, song: Song) {
+        for a in &mut self.list_album {
+            if a.name == album {
+                a.list_song.push(song);
+                return;
+            }
+        }
+
+        self.list_album.push(Album {
+            name: album.to_string(),
+            icon: None,
+            list_song: vec![song],
+        });
+    }
 }
 
 //================================================================
@@ -234,5 +185,104 @@ pub struct Song {
     pub name: String,
     pub path: String,
     pub time: usize,
-    pub track: usize,
+    pub track: Option<usize>,
+}
+
+impl Song {
+    pub fn new(path: &str) -> Result<(Option<String>, Option<String>, Song), ()> {
+        // Open the media source.
+        let src = std::fs::File::open(path).expect("failed to open media");
+
+        // Create the media source stream.
+        let mss = MediaSourceStream::new(Box::new(src), Default::default());
+
+        // Create a probe hint using the file's extension. [Optional]
+        let mut hint = Hint::new();
+        hint.with_extension("mp3");
+
+        // Use the default options for metadata and format readers.
+        let meta_opts: MetadataOptions = Default::default();
+        let fmt_opts: FormatOptions = Default::default();
+
+        // Probe the media source.
+        if let Ok(mut probed) =
+            symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts)
+        {
+            let mut file_artist: Option<String> = None;
+            let mut file_album: Option<String> = None;
+            let mut file_song: Option<String> = None;
+            let mut file_song_track: Option<usize> = None;
+
+            if let Some(revision) = probed.metadata.get().as_ref().and_then(|m| m.current()) {
+                for tag in revision.tags() {
+                    if let Some(key) = tag.std_key {
+                        match key {
+                            symphonia::core::meta::StandardTagKey::Artist => {
+                                file_artist = Some(tag.value.to_string())
+                            }
+                            symphonia::core::meta::StandardTagKey::Album => {
+                                file_album = Some(tag.value.to_string())
+                            }
+                            symphonia::core::meta::StandardTagKey::TrackTitle => {
+                                file_song = Some(tag.value.to_string())
+                            }
+                            symphonia::core::meta::StandardTagKey::TrackNumber => {
+                                file_song_track = Some(tag.value.to_string().parse().unwrap());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Find the first audio track with a known (decodeable) codec.
+            let track = probed
+                .format
+                .tracks()
+                .iter()
+                .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+                .unwrap();
+
+            // Use the default options for the decoder.
+            let dec_opts: DecoderOptions = Default::default();
+
+            // Calculate the needed size for our sample vector
+            // We do this now as we will borrow track in the decoder
+            let samples_capacity: usize = if let Some(n_frames) = track.codec_params.n_frames {
+                n_frames as usize
+            } else {
+                0
+            };
+
+            // Create a decoder for the track.
+            let mut decoder = symphonia::default::get_codecs()
+                .make(&track.codec_params, &dec_opts)
+                .unwrap();
+
+            // Create sample buffer and retrieve sample rate
+            let rate = {
+                // Read first packet and determine sample buffer size
+                let packet = probed.format.next_packet().unwrap();
+                if let Ok(d_p) = decoder.decode(&packet) {
+                    let spec = *d_p.spec();
+                    spec.rate as usize
+                } else {
+                    1
+                }
+            };
+
+            return Ok((
+                file_artist,
+                file_album,
+                Song {
+                    name: file_song.unwrap_or(path.to_string()),
+                    path: path.to_string(),
+                    time: samples_capacity / rate,
+                    track: file_song_track,
+                },
+            ));
+        }
+
+        Err(())
+    }
 }

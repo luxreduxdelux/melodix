@@ -48,14 +48,14 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use crate::layout::*;
 use crate::library::*;
 use crate::script::*;
 use crate::setting::*;
-use std::sync::Arc;
-use std::sync::Mutex;
 
 //================================================================
 
+use eframe::CreationContext;
 use eframe::egui::ImageSource;
 use eframe::egui::Shape;
 use eframe::egui::TextureOptions;
@@ -68,6 +68,7 @@ use serde::{Deserialize, Serialize};
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, PlatformConfig};
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::Duration;
 
@@ -105,40 +106,32 @@ impl Drop for State {
 
 pub struct App {
     pub state: State,
-    script: Arc<Mutex<Script>>,
-    search_state: (String, String, String),
-    select_state: (Option<String>, Option<String>, Option<usize>),
-    active_state: Option<(String, String, usize)>,
-    replay: bool,
-    random: bool,
+    pub search_state: (String, String, String),
+    pub select_state: (Option<usize>, Option<usize>, Option<usize>),
+    pub active_state: Option<(usize, usize, usize)>,
+    pub layout: Layout,
+    pub replay: bool,
+    pub random: bool,
+    pub sink: Sink,
+    pub script: Script,
     stream: OutputStream,
     handle: OutputStreamHandle,
-    sink: Arc<Mutex<Sink>>,
     media: MediaControls,
+    event: Receiver<MediaControlEvent>,
 }
 
 impl App {
-    const IMAGE_SKIP_A: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_a.png");
-    const IMAGE_SKIP_B: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_b.png");
-    const IMAGE_PLAY: eframe::egui::ImageSource<'_> = egui::include_image!("../data/play.png");
-    const IMAGE_PAUSE: eframe::egui::ImageSource<'_> = egui::include_image!("../data/pause.png");
-    //const IMAGE_REPLAY: eframe::egui::ImageSource<'_> = egui::include_image!("../data/pause.png");
-    //const IMAGE_RANDOM: eframe::egui::ImageSource<'_> = egui::include_image!("../data/pause.png");
-    //const IMAGE_VOLUME: eframe::egui::ImageSource<'_> = egui::include_image!("../data/pause.png");
-
-    //================================================================
-
     // get the currently active artist, album, and song.
-    fn get_play_state(&self) -> (&Artist, &Album, &Song) {
+    pub fn get_play_state(&self) -> (&Artist, &Album, &Song) {
         let artist = self
             .state
             .library
-            .map_artist
-            .get(&self.active_state.as_ref().unwrap().0)
+            .list_artist
+            .get(self.active_state.as_ref().unwrap().0)
             .unwrap();
         let album = artist
-            .map_album
-            .get(&self.active_state.as_ref().unwrap().1)
+            .list_album
+            .get(self.active_state.as_ref().unwrap().1)
             .unwrap();
         let song = album
             .list_song
@@ -148,105 +141,111 @@ impl App {
         (artist, album, song)
     }
 
-    fn song_play(&mut self) {
+    pub fn song_add(&mut self) {
         self.active_state = Some((
             self.select_state
                 .0
-                .clone()
-                .expect("song_play(): Incorrect unwrap on member 0."),
+                .expect("song_add(): Incorrect unwrap on member 0."),
             self.select_state
                 .1
-                .clone()
-                .expect("song_play(): Incorrect unwrap on member 1."),
+                .expect("song_add(): Incorrect unwrap on member 1."),
             self.select_state
                 .2
-                .expect("song_play(): Incorrect unwrap on member 2."),
+                .expect("song_add(): Incorrect unwrap on member 2."),
         ));
 
-        let (_, _, song) = self.get_play_state();
+        let (artist, album, song) = self.get_play_state();
 
-        if let Ok(sink) = self.sink.lock() {
-            sink.stop();
-            let file = std::fs::File::open(&song.path).unwrap();
-            sink.append(rodio::Decoder::new(BufReader::new(file)).unwrap());
-            sink.play();
+        self.sink.stop();
+        let file = std::fs::File::open(&song.path).unwrap();
+        self.sink
+            .append(rodio::Decoder::new(BufReader::new(file)).unwrap());
+        self.sink.play();
+
+        self.media
+            .set_metadata(MediaMetadata {
+                title: Some(&song.name.clone()),
+                album: Some(&album.name.clone()),
+                artist: Some(&artist.name.clone()),
+                cover_url: album.icon.clone().as_deref(),
+                duration: None,
+            })
+            .unwrap();
+    }
+
+    pub fn song_toggle(&self) {
+        if self.sink.is_paused() {
+            self.sink.play();
+
+            self.script.call(Script::CALL_PLAY, ());
+        } else {
+            self.sink.pause();
+
+            self.script.call(Script::CALL_PAUSE, ());
         }
     }
 
-    fn song_toggle(&self) {
-        if let Ok(sink) = self.sink.lock() {
-            if sink.is_paused() {
-                sink.play();
-
-                self.script.lock().unwrap().call(Script::CALL_PLAY, ());
+    pub fn song_seek(&self, seek: i64, delta: bool) {
+        let seek = {
+            if delta {
+                seek + self.sink.get_pos().as_secs() as i64
             } else {
-                sink.pause();
-
-                self.script.lock().unwrap().call(Script::CALL_PAUSE, ());
+                seek
             }
-        }
+        };
+
+        self.sink
+            .try_seek(Duration::from_secs(seek as u64))
+            .unwrap();
     }
 
-    fn song_seek(&self, seek: u64) {
-        if let Ok(sink) = self.sink.lock() {
-            sink.try_seek(Duration::from_secs(seek)).unwrap();
-        }
+    pub fn song_play(&self) {
+        self.sink.play();
     }
 
-    fn song_stop(&self) {
-        if let Ok(sink) = self.sink.lock() {
-            sink.stop();
-        }
+    pub fn song_pause(&self) {
+        self.sink.pause();
     }
 
-    fn song_skip_a(&mut self) {
+    pub fn song_set_volume(&self, volume: f32) {
+        self.sink.set_volume(volume);
+    }
+
+    pub fn song_stop(&mut self) {
+        self.active_state = None;
+        self.sink.stop();
+    }
+
+    pub fn song_skip_a(&mut self) {
+        /*
         let track = {
-            let (_, album, song) = self.get_play_state();
+            let (_, _, song) = self.active_state.unwrap();
+            let (_, _, song) = self.active_state.unwrap();
 
-            album.list_song.get(song.track - 2).map(|get| get.track)
+            album.list_song.get(song - 1)
         };
 
         if let Some(track) = track {
             self.select_state.2 = Some(track);
-            self.song_play();
+            self.song_add();
         }
+        */
     }
 
-    fn song_skip_b(&mut self) {
+    pub fn song_skip_b(&mut self) {
+        /*
         let track = {
             let (_, album, song) = self.get_play_state();
 
-            // TO-DO not a good way to find the next track.
+            // TO-DO not a good way to find the next track. will crash on under/over-flow.
             album.list_song.get(song.track - 1).map(|get| get.track)
         };
 
         if let Some(track) = track {
             self.select_state.2 = Some(track);
-            self.song_play();
+            self.song_add();
         }
-    }
-
-    fn format_time(time: usize) -> String {
-        let time_a = time / 60;
-        let time_b = time % 60;
-
-        let time_a = {
-            if time_a < 10 {
-                format!("0{time_a}")
-            } else {
-                time_a.to_string()
-            }
-        };
-
-        let time_b = {
-            if time_b < 10 {
-                format!("0{time_b}")
-            } else {
-                time_b.to_string()
-            }
-        };
-
-        format!("{time_a}:{time_b}")
+        */
     }
 
     pub fn error(message: &str) {
@@ -257,240 +256,11 @@ impl App {
             .show();
     }
 
-    // draw the top-most tool-bar.
-    fn draw_panel_tool(&mut self, _: &egui::Context) {}
-
-    // draw the top song status bar. hidden if no song is available.
-    fn draw_panel_song(&mut self, context: &egui::Context) {
-        let mut toggle = false;
-        let mut seek = None;
-        let mut skip_a = false;
-        let mut skip_b = false;
-
-        if let Some(active) = &self.active_state {
-            egui::TopBottomPanel::top("status")
-                .min_height(96.0)
-                .max_height(96.0)
-                .show(context, |ui| {
-                    ui.horizontal(|ui| {
-                        let (_, album, song) = self.get_play_state();
-
-                        if let Some(icon) = &album.icon {
-                            let image = egui::Image::new(format!("file://{icon}"))
-                                .texture_options(
-                                    TextureOptions::default()
-                                        .with_mipmap_mode(Some(egui::TextureFilter::Nearest)),
-                                )
-                                .fit_to_exact_size(Vec2::new(96.0, 96.0));
-
-                            ui.add(image);
-                        }
-
-                        ui.vertical(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(&active.0);
-                            ui.label(&active.1);
-                            ui.label(&song.name);
-                        });
-
-                        ui.separator();
-
-                        ui.add(egui::Button::opt_image_and_text(
-                            Some(
-                                egui::Image::new(Self::IMAGE_SKIP_A)
-                                    .fit_to_exact_size(Vec2::new(32.0, 32.0)),
-                            ),
-                            None,
-                        ))
-                        .clicked();
-
-                        let image = if self.sink.lock().unwrap().is_paused() {
-                            Self::IMAGE_PLAY
-                        } else {
-                            Self::IMAGE_PAUSE
-                        };
-
-                        if ui
-                            .add(egui::Button::opt_image_and_text(
-                                Some(
-                                    egui::Image::new(image)
-                                        .fit_to_exact_size(Vec2::new(32.0, 32.0)),
-                                ),
-                                None,
-                            ))
-                            .clicked()
-                        {
-                            toggle = true;
-                        }
-
-                        if ui
-                            .add(egui::Button::opt_image_and_text(
-                                Some(
-                                    egui::Image::new(Self::IMAGE_SKIP_B)
-                                        .fit_to_exact_size(Vec2::new(32.0, 32.0)),
-                                ),
-                                None,
-                            ))
-                            .clicked()
-                        {
-                            skip_b = true;
-                        }
-
-                        if let Ok(sink) = self.sink.lock() {
-                            let mut time = sink.get_pos().as_secs();
-
-                            if ui
-                                .add(
-                                    Slider::new(&mut time, 0..=song.time as u64)
-                                        .trailing_fill(true)
-                                        .show_value(false),
-                                )
-                                .changed()
-                            {
-                                seek = Some(time);
-                            }
-
-                            let play_time = Self::format_time(sink.get_pos().as_secs() as usize);
-                            let song_time = Self::format_time(song.time);
-
-                            ui.label(format!("{}/{}", play_time, song_time));
-                        }
-                    });
-                });
-        }
-
-        if toggle {
-            self.song_toggle();
-        }
-
-        if let Some(seek) = seek {
-            self.song_seek(seek);
-        }
-
-        if skip_a {
-            self.song_skip_a();
-        }
-
-        if skip_b {
-            self.song_skip_b();
-        }
-    }
-
-    // draw the L-most panel.
-    fn draw_panel_side_a(&mut self, context: &egui::Context) {
-        egui::SidePanel::left("panel_0")
-            .resizable(true)
-            .show(context, |ui| {
-                ui.add_space(6.0);
-                ui.text_edit_singleline(&mut self.search_state.0);
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for i in self.state.library.map_artist.keys() {
-                        if i.to_lowercase()
-                            .contains(&self.search_state.0.to_lowercase().trim())
-                        {
-                            if ui
-                                .selectable_value(&mut self.select_state.0, Some(i.to_string()), i)
-                                .clicked()
-                            {
-                                self.select_state.1 = None;
-                            }
-                        }
-                    }
-                });
-            });
-    }
-
-    // draw the center panel.
-    fn draw_panel_center(&mut self, context: &egui::Context) {
-        egui::CentralPanel::default().show(context, |ui| {
-            ui.text_edit_singleline(&mut self.search_state.1);
-
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(select_0) = &self.select_state.0 {
-                    let artist = self
-                        .state
-                        .library
-                        .map_artist
-                        .get(select_0)
-                        .expect("draw_panel_center(): Incorrect unwrap.");
-
-                    for i in artist.map_album.keys() {
-                        if i.to_lowercase()
-                            .contains(&self.search_state.1.to_lowercase().trim())
-                        {
-                            if ui
-                                .selectable_value(&mut self.select_state.1, Some(i.to_string()), i)
-                                .clicked()
-                            {
-                                self.select_state.2 = None;
-                            }
-                        }
-                    }
-                }
-            });
-        });
-    }
-
-    // draw the R-most panel.
-    fn draw_panel_side_b(&mut self, context: &egui::Context) {
-        let mut click = false;
-
-        egui::SidePanel::right("panel_1")
-            .resizable(true)
-            .show(context, |ui| {
-                ui.add_space(6.0);
-                ui.text_edit_singleline(&mut self.search_state.2);
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if let Some(select_1) = &self.select_state.1 {
-                            let artist = self
-                                .state
-                                .library
-                                .map_artist
-                                .get(self.select_state.0.as_ref().unwrap())
-                                .expect("draw_panel_side_b(): Incorrect unwrap (artist).");
-                            let album = artist
-                                .map_album
-                                .get(select_1)
-                                .expect("draw_panel_side_b(): Incorrect unwrap (album).");
-
-                            for (i, song) in album.list_song.iter().enumerate() {
-                                if song
-                                    .name
-                                    .to_lowercase()
-                                    .contains(&self.search_state.2.to_lowercase().trim())
-                                {
-                                    if ui
-                                        .selectable_value(
-                                            &mut self.select_state.2,
-                                            Some(i),
-                                            format!("{} | {}", song.track, &song.name),
-                                        )
-                                        .clicked()
-                                    {
-                                        click = true;
-                                    }
-                                }
-                            }
-                        }
-                    });
-            });
-
-        if click {
-            self.song_play();
-        }
-    }
-}
-
-impl Default for App {
-    fn default() -> Self {
+    pub fn new(cc: &CreationContext) -> Self {
         let (stream, handle) = rodio::OutputStream::try_default().unwrap();
-        let sink = Arc::new(Mutex::new(rodio::Sink::try_new(&handle).unwrap()));
+        let sink = rodio::Sink::try_new(&handle).unwrap();
         let state = State::default();
-        let script = Arc::new(Mutex::new(Script::new(&state.setting)));
+        let script = Script::new(&state.setting);
 
         let config = PlatformConfig {
             dbus_name: "melodix",
@@ -500,32 +270,13 @@ impl Default for App {
 
         let mut media = MediaControls::new(config).unwrap();
 
-        let sink_clone = sink.clone();
-        let scri_clone = script.clone();
-        // The closure must be Send and have a static lifetime.
-        media
-            .attach(move |event: MediaControlEvent| match event {
-                MediaControlEvent::Toggle => {
-                    let sink = sink_clone.lock().unwrap();
+        let (rx, event) = std::sync::mpsc::channel();
 
-                    if sink.is_paused() {
-                        sink.play();
-                        scri_clone.lock().unwrap().call(Script::CALL_PLAY, ());
-                    } else {
-                        sink.pause();
-                    }
-                }
-                _ => {}
-            })
-            .unwrap();
-
-        // Update the media metadata.
+        let clone = cc.egui_ctx.clone();
         media
-            .set_metadata(MediaMetadata {
-                title: Some("Souvlaki Space Station"),
-                artist: Some("Slowdive"),
-                album: Some("Souvlaki"),
-                ..Default::default()
+            .attach(move |event: MediaControlEvent| {
+                clone.request_repaint();
+                rx.send(event).unwrap();
             })
             .unwrap();
 
@@ -541,18 +292,44 @@ impl Default for App {
             handle,
             sink,
             media,
+            event,
+            layout: Layout::default(),
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
-        context.request_repaint_after_secs(1.0);
+        if let Ok(event) = self.event.try_recv() {
+            match event {
+                MediaControlEvent::Play => self.song_play(),
+                MediaControlEvent::Pause => self.song_pause(),
+                MediaControlEvent::Toggle => self.song_toggle(),
+                MediaControlEvent::Next => self.song_skip_b(),
+                MediaControlEvent::Previous => self.song_skip_a(),
+                MediaControlEvent::Stop => self.song_stop(),
+                MediaControlEvent::Seek(seek_direction) => match seek_direction {
+                    souvlaki::SeekDirection::Forward => self.song_seek(10, true),
+                    souvlaki::SeekDirection::Backward => self.song_seek(-10, true),
+                },
+                MediaControlEvent::SeekBy(seek_direction, duration) => match seek_direction {
+                    souvlaki::SeekDirection::Forward => {
+                        self.song_seek(duration.as_secs() as i64, true)
+                    }
+                    souvlaki::SeekDirection::Backward => {
+                        self.song_seek(-(duration.as_secs() as i64), true)
+                    }
+                },
+                MediaControlEvent::SetPosition(media_position) => {
+                    self.song_seek(media_position.0.as_secs() as i64, false)
+                }
+                MediaControlEvent::SetVolume(volume) => self.song_set_volume(volume as f32),
+                MediaControlEvent::OpenUri(_) => todo!(),
+                MediaControlEvent::Raise => context.send_viewport_cmd(egui::ViewportCommand::Focus),
+                MediaControlEvent::Quit => context.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
 
-        self.draw_panel_tool(context);
-        self.draw_panel_song(context);
-        self.draw_panel_side_a(context);
-        self.draw_panel_center(context);
-        self.draw_panel_side_b(context);
+        Layout::draw(self, context);
     }
 }
