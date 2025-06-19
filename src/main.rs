@@ -49,6 +49,7 @@
 */
 
 mod app;
+mod layout;
 mod library;
 mod script;
 mod setting;
@@ -61,19 +62,21 @@ use eframe::egui;
 //================================================================
 
 fn main() -> eframe::Result {
-    let app = Box::<App>::default();
+    // TO-DO get setting data here.
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([app.state.setting.size.0, app.state.setting.size.1]),
+    // set window data.
+    let configuration = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 768.0]),
         ..Default::default()
     };
+
+    // run window.
     eframe::run_native(
         "Melodix",
-        options,
+        configuration,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(app)
+            Ok(Box::new(App::new(cc)))
         }),
     )
 }
