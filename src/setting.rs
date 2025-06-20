@@ -54,24 +54,34 @@ use serde::{Deserialize, Serialize};
 
 //================================================================
 
-#[derive(Serialize, Deserialize)]
-pub enum ScriptSetting {
-    String(String),
-    Number(f32),
-    Boolean(bool),
-}
-
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Setting {
-    pub size: (f32, f32),
-    pub script_setting: HashMap<String, HashMap<String, ScriptSetting>>,
+    pub window_theme: bool,
+    pub window_style: bool,
+    pub window_notify: bool,
+    pub library_path: String,
+    pub library_find: bool,
+    pub script_allow: bool,
+    pub update_check: bool,
 }
 
-impl Default for Setting {
-    fn default() -> Self {
-        Self {
-            size: (1280.0, 720.0),
-            script_setting: HashMap::default(),
+impl Setting {
+    const PATH_SETTING: &'static str = "setting.data";
+
+    pub fn new() -> (Self, bool) {
+        if let Ok(file) = std::fs::read(Self::PATH_SETTING) {
+            if let Ok(setting) = postcard::from_bytes(&file) {
+                return (setting, false);
+            }
         }
+
+        (Self::default(), true)
+    }
+}
+
+impl Drop for Setting {
+    fn drop(&mut self) {
+        let serialize: Vec<u8> = postcard::to_allocvec(&self).unwrap();
+        std::fs::write("setting.data", serialize).unwrap();
     }
 }

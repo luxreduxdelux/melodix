@@ -49,6 +49,8 @@
 */
 
 use crate::app::*;
+use crate::library::Library;
+use crate::script::*;
 
 //================================================================
 
@@ -57,18 +59,12 @@ use eframe::egui::{self, Slider, Vec2};
 use mlua::prelude::*;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
-#[serde(tag = "kind")]
-enum Widget {
-    Label { name: String },
-    Button { name: String, call: String },
-}
-
-#[derive(Default, PartialEq)]
+#[derive(PartialEq)]
 pub enum Layout {
-    #[default]
+    Welcome,
     Library,
     Setting,
+    About,
 }
 
 impl Layout {
@@ -89,12 +85,21 @@ impl Layout {
 
     //================================================================
 
-    pub fn draw(app: &mut App, context: &egui::Context) {
-        Self::draw_panel_layout(app, context);
+    pub fn new(default: bool) -> Self {
+        if default {
+            println!("welcome");
+            Layout::Welcome
+        } else {
+            Layout::Library
+        }
+    }
 
+    pub fn draw(app: &mut App, context: &egui::Context) {
         match app.layout {
+            Layout::Welcome => Self::draw_welcome(app, context),
             Layout::Library => Self::draw_library(app, context),
             Layout::Setting => Self::draw_setting(app, context),
+            Layout::About => Self::draw_about(app, context),
         }
     }
 
@@ -121,31 +126,171 @@ impl Layout {
     }
 
     //================================================================
+    // about layout.
+    //================================================================
+
+    fn draw_about(app: &mut App, context: &egui::Context) {
+        egui::CentralPanel::default().show(context, |ui| {
+            ui.heading("Melodix (1.0.0)");
+            ui.label("Made by luxreduxdelux.");
+            ui.label("Additional help by:");
+            ui.label("* agus-balles");
+        });
+    }
+
+    //================================================================
+    // welcome layout.
+    //================================================================
+
+    fn draw_welcome(app: &mut App, context: &egui::Context) {
+        egui::CentralPanel::default().show(context, |ui| {
+            ui.label("Welcome to Melodix!");
+            ui.separator();
+            if ui.button("Select Library Folder").clicked() {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    app.state.library = Library::scan(&folder.as_path().display().to_string());
+                    app.layout = Layout::Library;
+                }
+            }
+        });
+    }
+
+    //================================================================
     // setting layout.
     //================================================================
 
     fn draw_setting(app: &mut App, context: &egui::Context) {
+        Self::draw_panel_layout(app, context);
+
         egui::CentralPanel::default().show(context, |ui| {
-            ui.label("Setting");
+            ui.heading("Melodix Configuration");
+            if ui
+                .checkbox(
+                    &mut app.state.setting.window_theme,
+                    "Use alternate window theme",
+                )
+                .clicked()
+            {
+                if app.state.setting.window_theme {
+                    context.set_theme(egui::Theme::Light);
+                } else {
+                    context.set_theme(egui::Theme::Dark);
+                }
+            };
+            ui.checkbox(
+                &mut app.state.setting.window_style,
+                "Use alternate window style",
+            );
+            ui.checkbox(
+                &mut app.state.setting.window_notify,
+                "Show song notification",
+            );
+            ui.checkbox(
+                &mut app.state.setting.library_find,
+                "Allow automatic library scan",
+            );
+            ui.checkbox(
+                &mut app.state.setting.script_allow,
+                "Allow Lua plug-in scripting",
+            );
+            ui.checkbox(
+                &mut app.state.setting.update_check,
+                "Allow automatic update check",
+            );
 
-            for script in &app.script.script_list {
+            if app.state.setting.script_allow {
                 ui.separator();
+                ui.heading("Lua Plug-In Configuration");
 
-                if let Ok(layout) = script.get("layout") {
-                    let layout: Vec<Widget> = app.script.lua.from_value(layout).unwrap();
+                for script in &mut app.script.script_list {
+                    if let Some(setting) = &mut script.0.setting {
+                        ui.collapsing(&script.0.name, |ui| {
+                            ui.group(|ui| {
+                                ui.label(format!("Info: {}", &script.0.info));
+                                ui.label(format!("From: {}", &script.0.from));
+                                ui.label(format!("Version: {}", &script.0.version));
+                            });
 
-                    for widget in layout {
-                        match widget {
-                            Widget::Label { name } => {
-                                ui.label(&name);
+                            let table: mlua::Table = script.1.get("setting").unwrap();
+
+                            for (key, value) in setting.iter_mut() {
+                                let table: mlua::Table = table.get(&**key).unwrap();
+
+                                match value {
+                                    /*
+                                    Widget::Label { name } => {
+                                        ui.label(name);
+                                    }
+                                    Widget::Button { name, call } => {
+                                        if ui.button(name).clicked() {
+                                            let call: mlua::Function =
+                                                script.1.get(&**call).unwrap();
+                                            call.call::<()>(()).unwrap();
+                                        }
+                                    }
+                                    */
+                                    SettingData::String {
+                                        data,
+                                        name,
+                                        info,
+                                        call,
+                                    } => {
+                                        let widget = ui.label(&*name).id;
+                                        let widget =
+                                            ui.text_edit_singleline(data).labelled_by(widget);
+
+                                        if widget.on_hover_text(&*info).changed() {
+                                            table.set("data", &**data).unwrap();
+
+                                            if let Some(call) = call {
+                                                let call: mlua::Function =
+                                                    script.1.get(&**call).unwrap();
+                                                call.call::<()>(&script.1).unwrap();
+                                            }
+                                        }
+                                    }
+                                    SettingData::Number {
+                                        data,
+                                        name,
+                                        info,
+                                        bind,
+                                        call,
+                                    } => {
+                                        let widget = ui.add(
+                                            egui::Slider::new(data, bind.0..=bind.1).text(&*name),
+                                        );
+
+                                        if widget.on_hover_text(&*info).drag_stopped() {
+                                            table.set("data", *data).unwrap();
+
+                                            if let Some(call) = call {
+                                                let call: mlua::Function =
+                                                    script.1.get(&**call).unwrap();
+                                                call.call::<()>(&script.1).unwrap();
+                                            }
+                                        }
+                                    }
+                                    SettingData::Boolean {
+                                        data,
+                                        name,
+                                        info,
+                                        call,
+                                    } => {
+                                        let widget = ui.checkbox(data, &*name);
+
+                                        if widget.on_hover_text(&*info).clicked() {
+                                            table.set("data", *data).unwrap();
+
+                                            if let Some(call) = call {
+                                                let call: mlua::Function =
+                                                    script.1.get(&**call).unwrap();
+                                                call.call::<()>(&script.1).unwrap();
+                                            }
+                                        }
+                                    }
+                                };
                             }
-                            Widget::Button { name, call } => {
-                                if ui.button(&name).clicked() {
-                                    let call: mlua::Function = script.get(call).unwrap();
-                                    call.call::<()>(()).unwrap();
-                                }
-                            }
-                        };
+                        });
                     }
                 }
             }
@@ -157,6 +302,8 @@ impl Layout {
     //================================================================
 
     fn draw_library(app: &mut App, context: &egui::Context) {
+        Self::draw_panel_layout(app, context);
+
         Self::draw_panel_song(app, context);
         Self::draw_panel_side_a(app, context);
         Self::draw_panel_center(app, context);
@@ -165,7 +312,7 @@ impl Layout {
 
     // draw the top song status bar. hidden if no song is available.
     fn draw_panel_song(app: &mut App, context: &egui::Context) {
-        if let Some(_) = &app.active_state {
+        if let Some(active) = app.active_state {
             context.request_repaint_after_secs(1.0);
 
             egui::TopBottomPanel::top("status").show(context, |ui| {
@@ -223,10 +370,8 @@ impl Layout {
 
                     ui.separator();
 
-                    let (_, _, song) = app.get_play_state();
-
                     let play_time = Self::format_time(app.sink.get_pos().as_secs() as usize);
-                    let song_time = Self::format_time(song.time);
+                    let song_time = Self::format_time(active.3 as usize);
 
                     ui.label(format!("{play_time}/{song_time}"));
 
@@ -234,7 +379,7 @@ impl Layout {
 
                     if ui
                         .add(
-                            Slider::new(&mut seek, 0..=song.time as u64)
+                            Slider::new(&mut seek, 0..=active.3)
                                 .trailing_fill(true)
                                 .show_value(false),
                         )

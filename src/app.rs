@@ -64,6 +64,7 @@ use mlua::prelude::*;
 use rodio::OutputStream;
 use rodio::OutputStreamHandle;
 use rodio::Sink;
+use rodio::Source;
 use serde::{Deserialize, Serialize};
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, PlatformConfig};
 use std::fs::File;
@@ -76,31 +77,17 @@ use std::time::Duration;
 
 // TO-DO minimize/hide window, tray icon, welcome menu, configuration menu, plug-in menu, plug-in setting data, add Artist/Album/Song header
 
-#[derive(Serialize, Deserialize)]
 pub struct State {
     pub library: Library,
     pub setting: Setting,
 }
 
-impl Default for State {
-    fn default() -> Self {
-        if let Ok(file) = std::fs::read("melodix.data") {
-            println!("Reading from melodix.data...");
-            let app = postcard::from_bytes(&file).unwrap();
-            return app;
-        }
+impl State {
+    fn new() -> (Self, bool) {
+        let (library, new_library) = Library::new();
+        let (setting, new_setting) = Setting::new();
 
-        Self {
-            library: Library::default(),
-            setting: Setting::default(),
-        }
-    }
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        let serialize: Vec<u8> = postcard::to_allocvec(&self).unwrap();
-        std::fs::write("melodix.data", serialize).unwrap();
+        (Self { library, setting }, new_library || new_setting)
     }
 }
 
@@ -108,7 +95,7 @@ pub struct App {
     pub state: State,
     pub search_state: (String, String, String),
     pub select_state: (Option<usize>, Option<usize>, Option<usize>),
-    pub active_state: Option<(usize, usize, usize)>,
+    pub active_state: Option<(usize, usize, usize, u64)>,
     pub layout: Layout,
     pub replay: bool,
     pub random: bool,
@@ -142,6 +129,8 @@ impl App {
     }
 
     pub fn song_add(&mut self) {
+        let clone = self.active_state;
+
         self.active_state = Some((
             self.select_state
                 .0
@@ -152,25 +141,49 @@ impl App {
             self.select_state
                 .2
                 .expect("song_add(): Incorrect unwrap on member 2."),
+            0,
         ));
 
-        let (artist, album, song) = self.get_play_state();
+        let path = {
+            let (_, _, song) = self.get_play_state();
+            song.path.clone()
+        };
 
-        self.sink.stop();
-        let file = std::fs::File::open(&song.path).unwrap();
-        self.sink
-            .append(rodio::Decoder::new(BufReader::new(file)).unwrap());
-        self.sink.play();
+        if let Ok(file) = std::fs::File::open(path)
+            && let Ok(source) = rodio::Decoder::new(BufReader::new(file))
+        {
+            let time = source.total_duration().unwrap_or_default().as_secs();
+            let state = self.active_state.unwrap();
+            self.active_state = Some((state.0, state.1, state.2, time));
 
-        self.media
-            .set_metadata(MediaMetadata {
-                title: Some(&song.name.clone()),
-                album: Some(&album.name.clone()),
-                artist: Some(&artist.name.clone()),
-                cover_url: album.icon.clone().as_deref(),
-                duration: None,
-            })
-            .unwrap();
+            self.sink.stop();
+            self.sink.append(source);
+            self.sink.play();
+
+            let (artist, album, song) = self.get_play_state();
+
+            self.script.call(
+                Script::CALL_PLAY,
+                (
+                    artist.name.as_str(),
+                    album.name.as_str(),
+                    song.name.as_str(),
+                    time,
+                ),
+            );
+
+            self.media
+                .set_metadata(MediaMetadata {
+                    title: Some(&song.name.clone()),
+                    album: Some(&album.name.clone()),
+                    artist: Some(&artist.name.clone()),
+                    cover_url: album.icon.clone().as_deref(),
+                    duration: None,
+                })
+                .unwrap();
+        } else {
+            self.active_state = clone;
+        }
     }
 
     pub fn song_toggle(&self) {
@@ -259,7 +272,7 @@ impl App {
     pub fn new(cc: &CreationContext) -> Self {
         let (stream, handle) = rodio::OutputStream::try_default().unwrap();
         let sink = rodio::Sink::try_new(&handle).unwrap();
-        let state = State::default();
+        let (state, default) = State::new();
         let script = Script::new(&state.setting);
 
         let config = PlatformConfig {
@@ -281,7 +294,7 @@ impl App {
             .unwrap();
 
         Self {
-            state: State::default(),
+            state,
             script,
             search_state: (String::default(), String::default(), String::default()),
             select_state: (None, None, None),
@@ -293,7 +306,7 @@ impl App {
             sink,
             media,
             event,
-            layout: Layout::default(),
+            layout: Layout::new(default),
         }
     }
 }
