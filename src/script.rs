@@ -48,16 +48,67 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use std::collections::HashMap;
+
 use crate::app::*;
+use crate::layout::*;
 use crate::setting::*;
 
 use mlua::prelude::*;
+use serde::Deserialize;
+use serde::Serialize;
 
 //================================================================
 
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SettingData {
+    String {
+        data: String,
+        name: String,
+        info: String,
+        call: Option<String>,
+    },
+    Number {
+        data: f32,
+        name: String,
+        info: String,
+        bind: (f32, f32),
+        call: Option<String>,
+    },
+    Boolean {
+        data: bool,
+        name: String,
+        info: String,
+        call: Option<String>,
+    },
+}
+
+#[derive(Deserialize)]
+pub struct Module {
+    pub name: String,
+    pub info: String,
+    pub from: String,
+    pub version: String,
+    pub setting: Option<HashMap<String, SettingData>>,
+}
+
+impl Module {
+    pub fn new(lua: &Lua, path: &str) -> (Self, mlua::Table) {
+        let file = std::fs::read_to_string(path).unwrap();
+        let table = lua.load(file).eval::<mlua::Table>().unwrap();
+        let serde = LuaDeserializeOptions::new().deny_unsupported_types(false);
+        let value = lua
+            .from_value_with(mlua::Value::Table(table.clone()), serde)
+            .unwrap();
+
+        (value, table)
+    }
+}
+
 pub struct Script {
     pub lua: Lua,
-    pub script_list: Vec<mlua::Table>,
+    pub script_list: Vec<(Module, mlua::Table)>,
 }
 
 impl Script {
@@ -73,34 +124,12 @@ impl Script {
     pub const CALL_PAUSE: &'static str = "pause";
 
     pub fn new(setting: &Setting) -> Self {
-        let lua = Lua::new();
+        let lua = unsafe { Lua::unsafe_new() };
         let mut script_list = Vec::new();
 
         for file in std::fs::read_dir(Self::PATH_SCRIPT).unwrap() {
-            let file = file.unwrap().path();
-            let file = std::fs::read_to_string(file).unwrap();
-
-            match lua.load(file).eval::<mlua::Table>() {
-                Ok(value) => {
-                    // TO-DO load script data from melodix.data
-                    /*
-                    let script_name = value.get::<String>("name").unwrap();
-
-                    if let Ok(set) = value.get::<mlua::Table>("setting")
-                        && let Some(entry) = setting.script_setting.get(&script_name)
-                    {
-                        for pair in set.pairs::<String, mlua::Value>() {
-                            let (key, value) = pair.unwrap();
-                        }
-                    }
-                    */
-
-                    script_list.push(value);
-                }
-                Err(message) => {
-                    App::error(&message.to_string());
-                }
-            };
+            let file = file.unwrap().path().display().to_string();
+            script_list.push(Module::new(&lua, &file));
         }
 
         let script = Self { lua, script_list };
@@ -112,8 +141,8 @@ impl Script {
 
     pub fn call<M: IntoLuaMulti + Copy>(&self, entry: &'static str, member: M) {
         for script in &self.script_list {
-            if let Ok(function) = script.get::<mlua::Function>(entry) {
-                if let Err(error) = function.call::<()>((script, member)) {
+            if let Ok(function) = script.1.get::<mlua::Function>(entry) {
+                if let Err(error) = function.call::<()>((&script.1, member)) {
                     App::error(&error.to_string());
                 }
             }

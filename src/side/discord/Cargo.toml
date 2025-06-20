@@ -1,0 +1,11 @@
+[package]
+name = "melodix-discord"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+mlua             = { version = "0.10.5", features = ["lua54", "module"] }
+discord-presence = { version = "1.6", features = ["activity_type"] }

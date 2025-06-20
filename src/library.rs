@@ -61,17 +61,29 @@ use walkdir::WalkDir;
 
 //================================================================
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Library {
     pub list_artist: Vec<Artist>,
 }
 
-impl Default for Library {
-    fn default() -> Self {
+impl Library {
+    const PATH_LIBRARY: &'static str = "library.data";
+
+    pub fn new() -> (Self, bool) {
+        if let Ok(file) = std::fs::read(Self::PATH_LIBRARY) {
+            if let Ok(library) = postcard::from_bytes(&file) {
+                return (library, false);
+            }
+        }
+
+        (Self::default(), true)
+    }
+
+    pub fn scan(path: &str) -> Self {
         let mut map_artist: HashMap<String, Artist> = HashMap::new();
         let mut icon: Option<u8> = None;
 
-        for entry in WalkDir::new("~/Music") {
+        for entry in WalkDir::new(path) {
             if let Ok((artist, album, song)) = Song::new(entry.unwrap().path().to_str().unwrap()) {
                 let artist = {
                     if let Some(artist) = artist {
@@ -138,9 +150,14 @@ impl Default for Library {
         }
         */
 
-        Self {
+        let library = Self {
             list_artist: map_artist.values().cloned().collect(),
-        }
+        };
+
+        let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
+        std::fs::write("library.data", serialize).unwrap();
+
+        library
     }
 }
 
@@ -184,7 +201,6 @@ pub struct Album {
 pub struct Song {
     pub name: String,
     pub path: String,
-    pub time: usize,
     pub track: Option<usize>,
 }
 
@@ -210,8 +226,11 @@ impl Song {
         {
             let mut file_artist: Option<String> = None;
             let mut file_album: Option<String> = None;
-            let mut file_song: Option<String> = None;
-            let mut file_song_track: Option<usize> = None;
+            let mut file_song = Song {
+                name: path.to_string(),
+                path: path.to_string(),
+                track: None,
+            };
 
             if let Some(revision) = probed.metadata.get().as_ref().and_then(|m| m.current()) {
                 for tag in revision.tags() {
@@ -224,10 +243,10 @@ impl Song {
                                 file_album = Some(tag.value.to_string())
                             }
                             symphonia::core::meta::StandardTagKey::TrackTitle => {
-                                file_song = Some(tag.value.to_string())
+                                file_song.name = tag.value.to_string()
                             }
                             symphonia::core::meta::StandardTagKey::TrackNumber => {
-                                file_song_track = Some(tag.value.to_string().parse().unwrap());
+                                file_song.track = Some(tag.value.to_string().parse().unwrap());
                             }
                             _ => {}
                         }
@@ -235,52 +254,7 @@ impl Song {
                 }
             }
 
-            // Find the first audio track with a known (decodeable) codec.
-            let track = probed
-                .format
-                .tracks()
-                .iter()
-                .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-                .unwrap();
-
-            // Use the default options for the decoder.
-            let dec_opts: DecoderOptions = Default::default();
-
-            // Calculate the needed size for our sample vector
-            // We do this now as we will borrow track in the decoder
-            let samples_capacity: usize = if let Some(n_frames) = track.codec_params.n_frames {
-                n_frames as usize
-            } else {
-                0
-            };
-
-            // Create a decoder for the track.
-            let mut decoder = symphonia::default::get_codecs()
-                .make(&track.codec_params, &dec_opts)
-                .unwrap();
-
-            // Create sample buffer and retrieve sample rate
-            let rate = {
-                // Read first packet and determine sample buffer size
-                let packet = probed.format.next_packet().unwrap();
-                if let Ok(d_p) = decoder.decode(&packet) {
-                    let spec = *d_p.spec();
-                    spec.rate as usize
-                } else {
-                    1
-                }
-            };
-
-            return Ok((
-                file_artist,
-                file_album,
-                Song {
-                    name: file_song.unwrap_or(path.to_string()),
-                    path: path.to_string(),
-                    time: samples_capacity / rate,
-                    track: file_song_track,
-                },
-            ));
+            return Ok((file_artist, file_album, file_song));
         }
 
         Err(())

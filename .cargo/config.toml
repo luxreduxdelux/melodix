@@ -1,0 +1,7 @@
+# this is necessary for each Lua module to work properly.
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-args=-rdynamic"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-args=-rdynamic"]
