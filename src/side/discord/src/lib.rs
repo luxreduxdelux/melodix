@@ -63,8 +63,7 @@ use std::{collections::HashMap, time::UNIX_EPOCH};
 struct Discord {
     status_client: Client,
     brainz_client: MusicBrainzClient,
-    cache: HashMap<(String, String), CacheEntry>,
-    tokio: tokio::runtime::Runtime,
+    cache: Arc<Mutex<HashMap<(String, String), CacheEntry>>>,
     ready: Arc<Mutex<bool>>,
 }
 
@@ -98,13 +97,6 @@ impl Discord {
 
         //================================================================
 
-        let tokio = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| mlua::Error::runtime("MelodixDiscord: Could not create runtime."))?;
-
-        //================================================================
-
         let cache = {
             if let Ok(file) = std::fs::read(Self::PATH_CACHE) {
                 postcard::from_bytes(&file).unwrap_or_default()
@@ -118,56 +110,123 @@ impl Discord {
         Ok(Self {
             status_client,
             brainz_client,
-            cache,
-            tokio,
+            cache: Arc::new(Mutex::new(cache)),
             ready,
         })
     }
 
-    async fn get_cover(client: MusicBrainzClient, group: &str, album: &str) -> Option<String> {
+    fn set_state(
+        mut d_client: Client,
+        group: String,
+        album: String,
+        track: String,
+        image: Option<String>,
+        time: u32,
+    ) {
+        // calculate begin/end time-stamp.
+        let time_a: u64 = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("MelodixDiscord: Could not get system time.")
+            .as_secs();
+        let time_b = time_a + time as u64;
+
+        //================================================================
+
+        // set Discord status.
+        std::thread::spawn(move || {
+            d_client
+                .set_activity(|act| {
+                    act.details(track)
+                        .state(group)
+                        ._type(discord_presence::models::ActivityType::Listening)
+                        .timestamps(|f| f.start(time_a).end(time_b))
+                        .assets(|f| {
+                            if let Some(image) = image {
+                                f.small_text(album).small_image(image)
+                            } else {
+                                f.small_text(album)
+                            }
+                        })
+                })
+                .expect("MelodixDiscord: Could not set Discord state.");
+        });
+    }
+
+    fn get_cover(
+        d_client: Client,
+        m_client: MusicBrainzClient,
+        cache: Arc<Mutex<HashMap<(String, String), CacheEntry>>>,
+        group: String,
+        album: String,
+        track: String,
+        time: u32,
+    ) {
         let query = ReleaseSearchQuery::query_builder()
-            .artist(group)
+            .artist(&group)
             .and()
-            .release(album)
+            .release(&album)
             .build();
 
-        if let Ok(search) = Release::search(query).execute_with_client(&client).await {
+        if let Ok(search) = Release::search(query).execute_with_client(&m_client) {
             for release in search.entities {
-                if let Ok(fetch) = release.get_coverart().execute_with_client(&client).await {
+                if let Ok(fetch) = release.get_coverart().execute_with_client(&m_client) {
                     match fetch {
                         CoverartResponse::Json(cover) => {
                             if let Some(cover) = cover.images.first() {
-                                return Some(cover.image.clone());
+                                let mut cache = cache.lock().unwrap();
+                                cache.insert(
+                                    (group.clone(), album.clone()),
+                                    CacheEntry::Path(cover.image.clone()),
+                                );
+                                Self::set_state(
+                                    d_client,
+                                    group,
+                                    album,
+                                    track,
+                                    Some(cover.image.clone()),
+                                    time,
+                                );
+                                return;
                             }
                         }
                         CoverartResponse::Url(cover) => {
-                            return Some(cover);
+                            let mut cache = cache.lock().unwrap();
+                            cache.insert(
+                                (group.clone(), album.clone()),
+                                CacheEntry::Path(cover.clone()),
+                            );
+                            Self::set_state(d_client, group, album, track, Some(cover), time);
+                            return;
                         }
                     }
                 }
             }
-        };
 
-        None
+            cache
+                .lock()
+                .unwrap()
+                .insert((group.clone(), album.clone()), CacheEntry::Null);
+            Self::set_state(d_client, group, album, track, None, time);
+        }
     }
 }
 
 impl Drop for Discord {
     fn drop(&mut self) {
-        let serialize: Vec<u8> = postcard::to_allocvec(&self.cache)
-            .expect("MelodixDiscord: Could not write image cache.");
-        std::fs::write(Self::PATH_CACHE, serialize)
-            .expect("MelodixDiscord: Could not write image cache.");
+        if let Ok(cache) = self.cache.lock() {
+            let serialize: Vec<u8> = postcard::to_allocvec(&*cache)
+                .expect("MelodixDiscord: Could not write image cache.");
+            std::fs::write(Self::PATH_CACHE, serialize)
+                .expect("MelodixDiscord: Could not write image cache.");
+        }
     }
 }
 
 impl mlua::UserData for Discord {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_async_method_mut(
+        methods.add_method_mut(
             "set_state",
-            |_,
-             mut this,
-             (group, album, track, image, time): (String, String, String, bool, u32)| async move {
+            |_, this, (group, album, track, image, time): (String, String, String, bool, u32)| {
                 println!("==== BEGIN DISCORD {album} {track}");
 
                 if !*this.ready.lock().unwrap() {
@@ -175,92 +234,54 @@ impl mlua::UserData for Discord {
                     return Ok(());
                 }
 
-                // enter into tokio guard.
-                let _enter = this.tokio.enter();
-
                 //================================================================
 
-                // get image from MusicBrainz.
-                let image = {
-                    // don't use an external image.
-                    if !image {
-                        None
-                    } else {
-                        match this.cache.get(&(group.clone(), album.clone())) {
-                            Some(cache) => match cache {
-                                CacheEntry::Path(path) => {
-                                    println!("DISCORD: Get path from cache");
-                                    Some(path).cloned()
-                                }
-                                CacheEntry::Null => None,
-                            },
-                            None => {
-                                // clone the group, album, and brainz client to move into async thread.
-                                let clone_group = group.clone();
-                                let clone_album = album.clone();
-                                let clone_brain = this.brainz_client.clone();
+                {
+                    let cache = this.cache.lock().unwrap();
+                    let cache = cache.get(&(group.clone(), album.clone()));
 
-                                // get image from MusicBrainz.
-                                let image = tokio::spawn(async move {
-                                    Self::get_cover(clone_brain, &clone_group, &clone_album).await
-                                });
-                                let image = this.tokio.block_on(image).expect(
-                                    "MelodixDiscord: Could not retrieve MusicBrainz image.",
+                    if let Some(cache) = cache {
+                        match cache {
+                            CacheEntry::Path(path) => {
+                                Self::set_state(
+                                    this.status_client.clone(),
+                                    group,
+                                    album,
+                                    track,
+                                    Some(path.to_string()),
+                                    time,
                                 );
-
-                                if let Some(image) = image {
-                                    // insert path into cache.
-                                    this.cache.insert(
-                                        (group.clone(), album.clone()),
-                                        CacheEntry::Path(image.clone()),
-                                    );
-
-                                    println!("DISCORD: Get path from MusicBrainz");
-
-                                    Some(image)
-                                } else {
-                                    // insert null into cache.
-                                    this.cache
-                                        .insert((group.clone(), album.clone()), CacheEntry::Null);
-
-                                    None
-                                }
+                                return Ok(());
                             }
+                            CacheEntry::Null => return Ok(()),
                         }
                     }
-                };
 
-                //================================================================
+                    // clone the group, album, and brainz client to move into async thread.
+                    let clone_state = this.status_client.clone();
+                    let clone_brain = this.brainz_client.clone();
+                    let clone_cache = this.cache.clone();
+                    let clone_group = group.clone();
+                    let clone_album = album.clone();
+                    let clone_track = album.clone();
 
-                // calculate begin/end time-stamp.
-                let time_a: u64 = std::time::SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("MelodixDiscord: Could not get system time.")
-                    .as_secs();
-                let time_b = time_a + time as u64;
+                    // get image from MusicBrainz.
+                    std::thread::spawn(move || {
+                        Self::get_cover(
+                            clone_state,
+                            clone_brain,
+                            clone_cache,
+                            clone_group,
+                            clone_album,
+                            clone_track,
+                            time,
+                        );
+                    });
 
-                //================================================================
+                    println!("==== CLOSE DISCORD");
 
-                // set Discord status.
-                this.status_client
-                    .set_activity(|act| {
-                        act.details(track)
-                            .state(group)
-                            ._type(discord_presence::models::ActivityType::Listening)
-                            .timestamps(|f| f.start(time_a).end(time_b))
-                            .assets(|f| {
-                                if let Some(image) = image {
-                                    f.small_text(album).small_image(image)
-                                } else {
-                                    f.small_text(album)
-                                }
-                            })
-                    })
-                    .expect("MelodixDiscord: Could not set Discord state.");
-
-                println!("==== CLOSE DISCORD");
-
-                Ok(())
+                    Ok(())
+                }
             },
         );
     }

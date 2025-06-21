@@ -48,9 +48,13 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use rodio::Source;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::fs::DirEntry;
+use std::io::BufReader;
+use std::time::UNIX_EPOCH;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::FormatOptions;
@@ -60,6 +64,8 @@ use symphonia::core::probe::Hint;
 use walkdir::WalkDir;
 
 //================================================================
+
+use rayon::prelude::*;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Library {
@@ -80,57 +86,62 @@ impl Library {
     }
 
     pub fn scan(path: &str) -> Self {
-        let mut map_artist: HashMap<String, Artist> = HashMap::new();
-        let mut icon: Option<u8> = None;
+        let t = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap();
 
-        for entry in WalkDir::new(path) {
-            if let Ok((artist, album, song)) = Song::new(entry.unwrap().path().to_str().unwrap()) {
-                let artist = {
-                    if let Some(artist) = artist {
-                        map_artist.entry(artist.clone()).or_insert(Artist {
-                            name: artist,
+        let path: Vec<walkdir::DirEntry> =
+            WalkDir::new(path).into_iter().map(|x| x.unwrap()).collect();
+
+        println!(
+            "(hash) total: {:?}",
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                - t
+        );
+
+        let mut map_artist: HashMap<String, Artist> = HashMap::default();
+
+        // 5 s. on par_iter
+
+        let t = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap();
+
+        let song_list: Vec<(Option<String>, Option<String>, Song)> = path
+            .par_iter()
+            .filter_map(|entry| Song::new(entry.path().to_str().unwrap()))
+            .collect();
+
+        println!(
+            "total: {:?}",
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                - t
+        );
+
+        for (artist, album, song) in song_list {
+            let artist = {
+                if let Some(artist) = artist {
+                    map_artist.entry(artist.clone()).or_insert(Artist {
+                        name: artist,
+                        list_album: vec![],
+                    })
+                } else {
+                    map_artist
+                        .entry("< Unknown Artist >".to_string())
+                        .or_insert(Artist {
+                            name: "< Unknown Artist >".to_string(),
                             list_album: vec![],
                         })
-                    } else {
-                        map_artist
-                            .entry("< Unknown Artist >".to_string())
-                            .or_insert(Artist {
-                                name: "< Unknown Artist >".to_string(),
-                                list_album: vec![],
-                            })
-                    }
-                };
-
-                let album = album.unwrap_or("< Unknown Album >".to_string());
-
-                artist.insert_song(&album, song);
-
-                /*
-                // TO-DO should really leave this up until after the user has selected the album.
-                if album.icon.is_none() {
-                    for entry in std::fs::read_dir(entry.path().parent().unwrap()).unwrap() {
-                        let entry = entry.unwrap().path();
-
-                        if entry.is_file() {
-                            let data = std::fs::read(&entry).unwrap();
-
-                            if image::guess_format(&data).is_ok() {
-                                println!("Loading cover...{:?}", entry);
-                                album.icon = Some(entry.display().to_string());
-                                break;
-                            }
-                        }
-                    }
                 }
+            };
 
-                album.list_song.push(Song {
-                    name: file_song,
-                    path: entry.path().display().to_string(),
-                    time: samples_capacity / rate,
-                    track: file_song_track,
-                });
-                */
-            }
+            let album = album.unwrap_or("< Unknown Album >".to_string());
+
+            artist.insert_song(&album, song);
         }
 
         let mut list_artist: Vec<Artist> = map_artist.values().cloned().collect();
@@ -198,11 +209,16 @@ pub struct Album {
 pub struct Song {
     pub name: String,
     pub path: String,
+    pub time: u64,
+    pub date: Option<String>,
+    pub kind: Option<String>,
     pub track: Option<usize>,
 }
 
+use mp3_duration;
+
 impl Song {
-    pub fn new(path: &str) -> Result<(Option<String>, Option<String>, Song), ()> {
+    pub fn new(path: &str) -> Option<(Option<String>, Option<String>, Song)> {
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
 
@@ -221,11 +237,41 @@ impl Song {
         if let Ok(mut probed) =
             symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts)
         {
+            let time = {
+                if let Ok(src) = std::fs::File::open(path)
+                    && let Ok(source) = rodio::Decoder::new(BufReader::new(src))
+                {
+                    let duration = source.total_duration().unwrap_or_default().as_secs();
+
+                    if duration == 0 {
+                        if let Ok(source) = mp3_duration::from_path(path) {
+                            source.as_secs()
+                        } else {
+                            0
+                        }
+                    } else {
+                        duration
+                    }
+                } else {
+                    0
+                }
+                /*
+                 if let Ok(source) = mp3_duration::from_path(path) {
+                    source.as_secs()
+                } else {
+                    0
+                }
+                */
+            };
+
             let mut file_artist: Option<String> = None;
             let mut file_album: Option<String> = None;
             let mut file_song = Song {
                 name: path.to_string(),
                 path: path.to_string(),
+                date: None,
+                kind: None,
+                time,
                 track: None,
             };
 
@@ -239,6 +285,12 @@ impl Song {
                             symphonia::core::meta::StandardTagKey::Album => {
                                 file_album = Some(tag.value.to_string())
                             }
+                            symphonia::core::meta::StandardTagKey::Genre => {
+                                file_song.kind = Some(tag.value.to_string())
+                            }
+                            symphonia::core::meta::StandardTagKey::Date => {
+                                file_song.date = Some(tag.value.to_string())
+                            }
                             symphonia::core::meta::StandardTagKey::TrackTitle => {
                                 file_song.name = tag.value.to_string()
                             }
@@ -251,9 +303,9 @@ impl Song {
                 }
             }
 
-            return Ok((file_artist, file_album, file_song));
+            return Some((file_artist, file_album, file_song));
         }
 
-        Err(())
+        None
     }
 }
