@@ -133,26 +133,23 @@ impl Library {
             }
         }
 
-        /*
-        for artist in map_artist.values_mut() {
-            for album in artist.map_album.values_mut() {
-                album.list_song.sort_by(|a, b| {
-                    if a.track < b.track {
-                        return Ordering::Less;
-                    }
-                    if a.track > b.track {
-                        return Ordering::Greater;
-                    }
+        let mut list_artist: Vec<Artist> = map_artist.values().cloned().collect();
 
-                    Ordering::Equal
+        list_artist.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for artist in &mut list_artist {
+            artist.list_album.sort_by(|a, b| a.name.cmp(&b.name));
+
+            for album in &mut artist.list_album {
+                album.list_song.sort_by(|a, b| {
+                    a.track
+                        .unwrap_or_default()
+                        .cmp(&b.track.unwrap_or_default())
                 });
             }
         }
-        */
 
-        let library = Self {
-            list_artist: map_artist.values().cloned().collect(),
-        };
+        let library = Self { list_artist };
 
         let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
         std::fs::write("library.data", serialize).unwrap();
