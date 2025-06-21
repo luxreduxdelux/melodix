@@ -52,82 +52,26 @@ use crate::layout::*;
 use crate::library::*;
 use crate::script::*;
 use crate::setting::*;
+use crate::system::*;
+use crate::window::*;
 
 //================================================================
 
 use eframe::CreationContext;
-use eframe::egui::ImageSource;
-use eframe::egui::Shape;
-use eframe::egui::TextureOptions;
-use eframe::egui::{self, Slider, Vec2};
-use mlua::prelude::*;
-use notify_rust::Hint;
-use notify_rust::Notification;
-use rodio::OutputStream;
-use rodio::OutputStreamHandle;
-use rodio::Sink;
-use rodio::Source;
-use serde::{Deserialize, Serialize};
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, PlatformConfig};
-use std::fs::File;
+use eframe::egui;
 use std::io::BufReader;
-use std::sync::mpsc::{Receiver, Sender};
-use std::thread;
 use std::time::Duration;
-use tray_icon::TrayIconEvent;
-use tray_icon::menu::MenuEvent;
-use tray_icon::menu::MenuItem;
-use tray_icon::menu::MenuItemBuilder;
-use tray_icon::menu::PredefinedMenuItem;
-use tray_icon::{TrayIconBuilder, menu::Menu};
 
 //================================================================
 
 // TO-DO minimize/hide window, tray icon, welcome menu, configuration menu, plug-in menu, plug-in setting data, add Artist/Album/Song header
 
-pub struct State {
+pub struct App {
     pub library: Library,
     pub setting: Setting,
-    pub filter_group: Vec<usize>,
-    pub filter_album: Vec<usize>,
-    pub filter_track: Vec<usize>,
-}
-
-impl State {
-    fn new() -> (Self, bool) {
-        let (library, new_library) = Library::new();
-        let (setting, _) = Setting::new();
-
-        (
-            Self {
-                filter_group: (0..library.list_artist.len()).collect(),
-                filter_album: Vec::new(),
-                filter_track: Vec::new(),
-                library,
-                setting,
-            },
-            new_library,
-        )
-    }
-}
-
-pub struct App {
-    pub state: State,
-    pub search_state: (String, String, String),
-    pub select_state: (Option<usize>, Option<usize>, Option<usize>),
-    pub active_state: Option<(usize, usize, usize, u64)>,
-    pub layout: Layout,
-    pub replay: bool,
-    pub random: bool,
-    pub sink: Sink,
+    pub window: Window,
     pub script: Script,
-    stream: OutputStream,
-    handle: OutputStreamHandle,
-    media: MediaControls,
-    ctx: egui::Context,
-    click_tx: Sender<String>,
-    click_rx: Receiver<String>,
-    event_rx: Receiver<MediaControlEvent>,
+    pub system: System,
 }
 
 impl App {
@@ -151,7 +95,7 @@ impl App {
         (artist, album, song)
     }
 
-    pub fn song_add(&mut self) {
+    pub fn song_add(&mut self, context: &egui::Context) {
         let clone = self.active_state;
 
         self.active_state = Some((
@@ -164,7 +108,6 @@ impl App {
             self.select_state
                 .2
                 .expect("song_add(): Incorrect unwrap on member 2."),
-            0,
         ));
 
         let path = {
@@ -175,9 +118,8 @@ impl App {
         if let Ok(file) = std::fs::File::open(path)
             && let Ok(source) = rodio::Decoder::new(BufReader::new(file))
         {
-            let time = source.total_duration().unwrap_or_default().as_secs();
             let state = self.active_state.unwrap();
-            self.active_state = Some((state.0, state.1, state.2, time));
+            self.active_state = Some((state.0, state.1, state.2));
 
             self.sink.stop();
             self.sink.append(source);
@@ -189,13 +131,13 @@ impl App {
             let t_1 = album.name.clone();
             let t_2 = song.name.clone();
 
-            self.script.call(Script::CALL_PLAY, (t_0, t_1, t_2, time));
+            self.script
+                .call(Script::CALL_PLAY, (t_0, t_1, t_2, song.time));
 
             let t_0 = artist.name.clone();
             let t_1 = album.name.clone();
             let t_2 = song.name.clone();
             let t_3 = album.icon.clone();
-            let cx = self.ctx.clone();
             let tx = self.click_tx.clone();
 
             /*std::thread::spawn(move || {
@@ -311,141 +253,25 @@ impl App {
             .show();
     }
 
-    pub fn new(cc: &CreationContext) -> Self {
-        let (stream, handle) = rodio::OutputStream::try_default().unwrap();
-        let sink = rodio::Sink::try_new(&handle).unwrap();
-        let (state, default) = State::new();
-        let script = Script::new(&state.setting);
-
-        let config = PlatformConfig {
-            dbus_name: "melodix",
-            display_name: "Melodix",
-            hwnd: None,
-        };
-
-        cc.egui_ctx.set_zoom_factor(state.setting.window_scale);
-
-        if state.setting.window_theme {
-            cc.egui_ctx.set_theme(egui::Theme::Light);
-        } else {
-            cc.egui_ctx.set_theme(egui::Theme::Dark);
-        }
-
-        let mut media = MediaControls::new(config).unwrap();
-
-        let (event_tx, event_rx) = std::sync::mpsc::channel();
-        let (click_tx, click_rx) = std::sync::mpsc::channel();
-
-        let clone = cc.egui_ctx.clone();
-        media
-            .attach(move |event: MediaControlEvent| {
-                clone.request_repaint();
-                event_tx.send(event).unwrap();
-            })
-            .unwrap();
-
-        // Since egui uses winit under the hood and doesn't use gtk on Linux, and we need gtk for
-        // the tray icon to show up, we need to spawn a thread
-        // where we initialize gtk and create the tray_icon
-        #[cfg(target_os = "linux")]
-        std::thread::spawn(|| {
-            use tray_icon::menu::Menu;
-
-            gtk::init().unwrap();
-
-            let tray_menu = tray_icon::menu::Menu::with_items(&[
-                &MenuItemBuilder::new().text("Play").enabled(true).build(),
-                &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
-                &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
-                &MenuItemBuilder::new().text("Exit").enabled(true).build(),
-            ])
-            .unwrap();
-            let tray_icon = TrayIconBuilder::new()
-                .with_menu(Box::new(tray_menu))
-                .with_tooltip("system-tray - tray icon library!")
-                .build()
-                .unwrap();
-
-            gtk::main();
-        });
+    pub fn new(context: &CreationContext) -> Self {
+        let (library, new_library) = Library::new();
+        let setting = Setting::new(context);
+        let script = Script::new(&setting);
 
         Self {
-            state,
+            library,
+            setting,
             script,
-            search_state: (String::default(), String::default(), String::default()),
-            select_state: (None, None, None),
-            active_state: None,
-            replay: false,
-            random: false,
-            stream,
-            handle,
-            sink,
-            media,
-            layout: Layout::new(default),
-            ctx: cc.egui_ctx.clone(),
-            click_tx,
-            click_rx,
-            event_rx,
+            window: Window::new(new_library),
+            system: System::new(context),
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
-        // self.handle_media_event();
-        // self.handle_tray_event();
-        // self.handle_menu_event(context);
-
-        if let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            println!("tray event: {:?}", event);
-        }
-
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            match event.id.0.as_str() {
-                "1" => self.song_toggle(),
-                "2" => self.song_skip_a(),
-                "3" => self.song_skip_b(),
-                "4" => context.send_viewport_cmd(egui::ViewportCommand::Close),
-                _ => {}
-            }
-        }
-
-        if let Ok(click) = self.click_rx.try_recv() {
-            match click.as_str() {
-                "skip-a" => self.song_skip_a(),
-                "skip-b" => self.song_skip_b(),
-                _ => {}
-            }
-        }
-
-        if let Ok(event) = self.event_rx.try_recv() {
-            match event {
-                MediaControlEvent::Play => self.song_play(),
-                MediaControlEvent::Pause => self.song_pause(),
-                MediaControlEvent::Toggle => self.song_toggle(),
-                MediaControlEvent::Next => self.song_skip_b(),
-                MediaControlEvent::Previous => self.song_skip_a(),
-                MediaControlEvent::Stop => self.song_stop(),
-                MediaControlEvent::Seek(seek_direction) => match seek_direction {
-                    souvlaki::SeekDirection::Forward => self.song_seek(10, true),
-                    souvlaki::SeekDirection::Backward => self.song_seek(-10, true),
-                },
-                MediaControlEvent::SeekBy(seek_direction, duration) => match seek_direction {
-                    souvlaki::SeekDirection::Forward => {
-                        self.song_seek(duration.as_secs() as i64, true)
-                    }
-                    souvlaki::SeekDirection::Backward => {
-                        self.song_seek(-(duration.as_secs() as i64), true)
-                    }
-                },
-                MediaControlEvent::SetPosition(media_position) => {
-                    self.song_seek(media_position.0.as_secs() as i64, false)
-                }
-                MediaControlEvent::SetVolume(volume) => self.song_set_volume(volume as f32),
-                MediaControlEvent::OpenUri(_) => todo!(),
-                MediaControlEvent::Raise => context.send_viewport_cmd(egui::ViewportCommand::Focus),
-                MediaControlEvent::Quit => context.send_viewport_cmd(egui::ViewportCommand::Close),
-            }
+        if let Some(event) = self.system.poll_event() {
+            System::make_event(event, self, context);
         }
 
         Layout::draw(self, context);

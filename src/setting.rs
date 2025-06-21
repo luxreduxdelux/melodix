@@ -48,8 +48,8 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use std::collections::HashMap;
-
+use eframe::CreationContext;
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 //================================================================
@@ -71,14 +71,22 @@ pub struct Setting {
 impl Setting {
     const PATH_SETTING: &'static str = "setting.data";
 
-    pub fn new() -> (Self, bool) {
+    pub fn new(context: &CreationContext) -> Self {
         if let Ok(file) = std::fs::read(Self::PATH_SETTING) {
-            if let Ok(setting) = postcard::from_bytes(&file) {
-                return (setting, false);
+            if let Ok(setting) = postcard::from_bytes::<Self>(&file) {
+                context.egui_ctx.set_zoom_factor(setting.window_scale);
+
+                if setting.window_theme {
+                    context.egui_ctx.set_theme(egui::Theme::Light);
+                } else {
+                    context.egui_ctx.set_theme(egui::Theme::Dark);
+                }
+
+                return setting;
             }
         }
 
-        (Self::default(), true)
+        Self::default()
     }
 }
 

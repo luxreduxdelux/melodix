@@ -54,17 +54,33 @@ use crate::script::*;
 
 //================================================================
 
-use eframe::egui::{self, Slider, Vec2};
+use eframe::egui::{self, OpenUrl, Slider, Vec2};
 use eframe::egui::{Color32, TextureOptions};
 use egui_extras::{Column, TableBuilder};
 use mlua::prelude::*;
 use serde::Deserialize;
 
+//================================================================
+
+pub struct Window {
+    pub layout: Layout,
+    pub filter_group: Vec<usize>,
+    pub filter_album: Vec<usize>,
+    pub filter_track: Vec<usize>,
+    pub search_state: (String, String, String),
+    pub select_state: (Option<usize>, Option<usize>, Option<usize>),
+    pub active_state: Option<(usize, usize, usize)>,
+    pub track_queue: Vec<(usize, usize, usize)>,
+    pub replay: bool,
+    pub random: bool,
+}
+
 #[derive(PartialEq)]
 pub enum Layout {
     Welcome,
     Library,
-    Setting,
+    Queue,
+    Setup,
     About,
 }
 
@@ -96,10 +112,27 @@ impl Layout {
     }
 
     pub fn draw(app: &mut App, context: &egui::Context) {
+        context.request_repaint_after_secs(1.0);
+
+        if app.sink.empty() && app.active_state.is_some() {
+            println!("{:?}", app.track_queue);
+
+            if app.replay {
+                app.song_add(context);
+            } else {
+                if !app.track_queue.is_empty() {
+                    let pop = app.track_queue.remove(0);
+                    app.select_state = (Some(pop.0), Some(pop.1), Some(pop.2));
+                    app.song_add(context);
+                }
+            }
+        }
+
         match app.layout {
             Layout::Welcome => Self::draw_welcome(app, context),
             Layout::Library => Self::draw_library(app, context),
-            Layout::Setting => Self::draw_setting(app, context),
+            Layout::Queue => Self::draw_queue(app, context),
+            Layout::Setup => Self::draw_setup(app, context),
             Layout::About => Self::draw_about(app, context),
         }
     }
@@ -134,8 +167,67 @@ impl Layout {
         egui::TopBottomPanel::top("layout").show(context, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut app.layout, Layout::Library, "Library");
-                ui.selectable_value(&mut app.layout, Layout::Setting, "Setting");
+                ui.selectable_value(&mut app.layout, Layout::Queue, "Queue");
+                ui.selectable_value(&mut app.layout, Layout::Setup, "Setup");
                 ui.selectable_value(&mut app.layout, Layout::About, "About");
+            });
+        });
+    }
+
+    //================================================================
+    // queue layout.
+    //================================================================
+
+    fn draw_queue(app: &mut App, context: &egui::Context) {
+        Self::draw_panel_layout(app, context);
+
+        egui::CentralPanel::default().show(context, |ui| {
+            let table = TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::auto())
+                .column(Column::remainder())
+                .column(Column::remainder())
+                .column(Column::remainder())
+                .header(16.0, |mut header| {
+                    header.col(|ui| {
+                        ui.strong("Number");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Group");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Album");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Track");
+                    });
+                });
+
+            table.body(|ui| {
+                ui.rows(16.0, app.track_queue.len(), |mut row| {
+                    let i = row.index();
+                    let queue = app.track_queue.get(i).unwrap();
+                    let group = app.state.library.list_artist.get(queue.0).unwrap();
+                    let album = group.list_album.get(queue.1).unwrap();
+                    let track = album.list_song.get(queue.2).unwrap();
+
+                    row.col(|ui| {
+                        ui.add(egui::Label::new((i + 1).to_string()).selectable(false));
+                    });
+
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(&group.name).selectable(false));
+                    });
+
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(&album.name).selectable(false));
+                    });
+
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(&track.name).selectable(false));
+                    });
+                })
             });
         });
     }
@@ -176,11 +268,17 @@ impl Layout {
     // setting layout.
     //================================================================
 
-    fn draw_setting(app: &mut App, context: &egui::Context) {
+    fn draw_setup(app: &mut App, context: &egui::Context) {
         Self::draw_panel_layout(app, context);
 
         egui::CentralPanel::default().show(context, |ui| {
             ui.heading("Melodix Configuration");
+            if ui.button("Scan Folder").clicked() {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    app.state.library = Library::scan(&folder.as_path().display().to_string());
+                    app.layout = Layout::Library;
+                }
+            }
             if ui
                 .add(
                     egui::Slider::new(&mut app.state.setting.window_scale, 1.0..=2.0)
@@ -341,8 +439,6 @@ impl Layout {
     // draw the top song status bar. hidden if no song is available.
     fn draw_panel_song(app: &mut App, context: &egui::Context) {
         if let Some(active) = app.active_state {
-            context.request_repaint_after_secs(1.0);
-
             egui::TopBottomPanel::top("status").show(context, |ui| {
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -420,8 +516,10 @@ impl Layout {
 
                         ui.separator();
 
+                        let (_, _, song) = app.get_play_state();
+
                         let play_time = Self::format_time(app.sink.get_pos().as_secs() as usize);
-                        let song_time = Self::format_time(active.3 as usize);
+                        let song_time = Self::format_time(song.time as usize);
 
                         ui.label(format!("{play_time}/{song_time}"));
 
@@ -429,7 +527,7 @@ impl Layout {
 
                         if ui
                             .add(
-                                Slider::new(&mut seek, 0..=active.3)
+                                Slider::new(&mut seek, 0..=song.time)
                                     .trailing_fill(true)
                                     .show_value(false),
                             )
@@ -494,6 +592,7 @@ impl Layout {
                         .column(Column::auto())
                         .column(Column::remainder())
                         .column(Column::remainder())
+                        .column(Column::remainder())
                         .column(Column::auto())
                         .header(16.0, |mut header| {
                             header.col(|ui| {
@@ -504,6 +603,9 @@ impl Layout {
                             });
                             header.col(|ui| {
                                 ui.strong("Genre");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Date");
                             });
                             header.col(|ui| {
                                 ui.strong("Time");
@@ -534,11 +636,32 @@ impl Layout {
                             });
 
                             row.col(|ui| {
-                                ui.add(egui::Label::new("foo").selectable(false));
+                                ui.add(
+                                    egui::Label::new(if let Some(kind) = &track.kind {
+                                        kind.as_str()
+                                    } else {
+                                        ""
+                                    })
+                                    .selectable(false),
+                                );
                             });
 
                             row.col(|ui| {
-                                ui.add(egui::Label::new("bar").selectable(false));
+                                ui.add(
+                                    egui::Label::new(if let Some(date) = &track.date {
+                                        date.as_str()
+                                    } else {
+                                        ""
+                                    })
+                                    .selectable(false),
+                                );
+                            });
+
+                            row.col(|ui| {
+                                ui.add(
+                                    egui::Label::new(Self::format_time(track.time as usize))
+                                        .selectable(false),
+                                );
                             });
 
                             if row.response().clicked() {
@@ -551,7 +674,8 @@ impl Layout {
             });
 
         if click {
-            app.song_add();
+            app.track_queue.clear();
+            app.song_add(context);
         }
     }
 
@@ -638,6 +762,7 @@ impl Layout {
             .show(context, |ui| {
                 if let Some(select) = app.select_state.0 {
                     let mut sort = false;
+                    let mut click = None;
 
                     ui.add_space(6.0);
 
@@ -690,16 +815,35 @@ impl Layout {
                             });
 
                             if row.response().clicked() {
-                                println!("foo");
                                 app.select_state.1 = Some(i);
                                 app.state.filter_track = (0..album.list_song.len()).collect();
                                 app.select_state.2 = None;
+                            }
+
+                            if row.response().double_clicked() {
+                                click = Some(app.state.filter_album.get(i).cloned().unwrap());
                             }
                         });
                     });
 
                     if sort {
                         app.state.filter_album.reverse();
+                    }
+
+                    if let Some(click) = click {
+                        let i_group = app.select_state.0.unwrap();
+                        let i_album = app.select_state.1.unwrap();
+                        let album = artist.list_album.get(click).unwrap();
+                        app.select_state.2 = Some(0);
+                        app.track_queue.clear();
+
+                        for x in 1..album.list_song.len() {
+                            app.track_queue.push((i_group, i_album, x));
+                        }
+
+                        println!("{:?}", app.track_queue);
+
+                        app.song_add(context);
                     }
                 }
             });
