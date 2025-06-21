@@ -54,8 +54,9 @@ use crate::script::*;
 
 //================================================================
 
-use eframe::egui::TextureOptions;
 use eframe::egui::{self, Slider, Vec2};
+use eframe::egui::{Color32, TextureOptions};
+use egui_extras::{Column, TableBuilder};
 use mlua::prelude::*;
 use serde::Deserialize;
 
@@ -107,10 +108,23 @@ impl Layout {
     // utility.
     //================================================================
 
-    fn draw_button_image(ui: &mut egui::Ui, image: egui::ImageSource, select: bool) -> bool {
+    fn draw_button_image(
+        ui: &mut egui::Ui,
+        image: egui::ImageSource,
+        select: bool,
+        invert: bool,
+    ) -> bool {
         ui.add(
-            egui::Button::image(egui::Image::new(image).fit_to_exact_size(Vec2::new(32.0, 32.0)))
-                .selected(select),
+            egui::Button::image(
+                egui::Image::new(image)
+                    .fit_to_exact_size(Vec2::new(32.0, 32.0))
+                    .tint(if invert {
+                        Color32::BLACK
+                    } else {
+                        Color32::WHITE
+                    }),
+            )
+            .selected(select),
         )
         .clicked()
     }
@@ -121,6 +135,7 @@ impl Layout {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut app.layout, Layout::Library, "Library");
                 ui.selectable_value(&mut app.layout, Layout::Setting, "Setting");
+                ui.selectable_value(&mut app.layout, Layout::About, "About");
             });
         });
     }
@@ -130,6 +145,8 @@ impl Layout {
     //================================================================
 
     fn draw_about(app: &mut App, context: &egui::Context) {
+        Self::draw_panel_layout(app, context);
+
         egui::CentralPanel::default().show(context, |ui| {
             ui.heading("Melodix (1.0.0)");
             ui.label("Made by luxreduxdelux.");
@@ -165,6 +182,15 @@ impl Layout {
         egui::CentralPanel::default().show(context, |ui| {
             ui.heading("Melodix Configuration");
             if ui
+                .add(
+                    egui::Slider::new(&mut app.state.setting.window_scale, 1.0..=2.0)
+                        .text("Window scale factor"),
+                )
+                .drag_stopped()
+            {
+                context.set_zoom_factor(app.state.setting.window_scale);
+            };
+            if ui
                 .checkbox(
                     &mut app.state.setting.window_theme,
                     "Use alternate window theme",
@@ -182,9 +208,11 @@ impl Layout {
                 "Use alternate window style",
             );
             ui.checkbox(
-                &mut app.state.setting.window_notify,
-                "Show song notification",
+                &mut app.state.setting.window_media,
+                "Allow multi-media key usage",
             );
+            ui.checkbox(&mut app.state.setting.window_tray, "Show tray icon");
+            ui.checkbox(&mut app.state.setting.window_push, "Show song notification");
             ui.checkbox(
                 &mut app.state.setting.library_find,
                 "Allow automatic library scan",
@@ -305,9 +333,9 @@ impl Layout {
         Self::draw_panel_layout(app, context);
 
         Self::draw_panel_song(app, context);
-        Self::draw_panel_side_a(app, context);
-        Self::draw_panel_center(app, context);
-        Self::draw_panel_side_b(app, context);
+        Self::draw_panel_track(app, context);
+        Self::draw_panel_group(app, context);
+        Self::draw_panel_album(app, context);
     }
 
     // draw the top song status bar. hidden if no song is available.
@@ -316,212 +344,365 @@ impl Layout {
             context.request_repaint_after_secs(1.0);
 
             egui::TopBottomPanel::top("status").show(context, |ui| {
-                ui.horizontal(|ui| {
-                    {
-                        let (artist, album, song) = app.get_play_state();
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        {
+                            let (artist, album, song) = app.get_play_state();
 
-                        if let Some(icon) = &album.icon {
-                            let image = egui::Image::new(format!("file://{icon}"))
-                                .texture_options(
-                                    TextureOptions::default()
-                                        .with_mipmap_mode(Some(egui::TextureFilter::Nearest)),
-                                )
-                                .fit_to_exact_size(Vec2::new(96.0, 96.0));
+                            if let Some(icon) = &album.icon {
+                                let image = egui::Image::new(format!("file://{icon}"))
+                                    .texture_options(
+                                        TextureOptions::default()
+                                            .with_mipmap_mode(Some(egui::TextureFilter::Nearest)),
+                                    )
+                                    .fit_to_exact_size(Vec2::new(96.0, 96.0));
 
-                            ui.add(image);
+                                ui.add(image);
+                            }
+
+                            ui.vertical(|ui| {
+                                ui.label(&artist.name);
+                                ui.label(&album.name);
+                                ui.label(&song.name);
+                            });
                         }
 
-                        ui.vertical(|ui| {
-                            ui.label(&artist.name);
-                            ui.label(&album.name);
-                            ui.label(&song.name);
-                        });
-                    }
+                        ui.separator();
 
-                    ui.separator();
+                        if Self::draw_button_image(
+                            ui,
+                            Self::IMAGE_SKIP_A,
+                            false,
+                            app.state.setting.window_theme,
+                        ) {
+                            app.song_skip_a();
+                        }
 
-                    if Self::draw_button_image(ui, Self::IMAGE_SKIP_A, false) {
-                        app.song_skip_a();
-                    }
+                        let image = if app.sink.is_paused() {
+                            Self::IMAGE_PLAY
+                        } else {
+                            Self::IMAGE_PAUSE
+                        };
 
-                    let image = if app.sink.is_paused() {
-                        Self::IMAGE_PLAY
-                    } else {
-                        Self::IMAGE_PAUSE
-                    };
+                        if Self::draw_button_image(ui, image, false, app.state.setting.window_theme)
+                        {
+                            app.song_toggle();
+                        }
 
-                    if Self::draw_button_image(ui, image, false) {
-                        app.song_toggle();
-                    }
+                        if Self::draw_button_image(
+                            ui,
+                            Self::IMAGE_SKIP_B,
+                            false,
+                            app.state.setting.window_theme,
+                        ) {
+                            app.song_skip_b();
+                        }
 
-                    if Self::draw_button_image(ui, Self::IMAGE_SKIP_B, false) {
-                        app.song_skip_b();
-                    }
+                        if Self::draw_button_image(
+                            ui,
+                            Self::IMAGE_REPLAY,
+                            app.replay,
+                            app.state.setting.window_theme,
+                        ) {
+                            app.replay = !app.replay;
+                        }
 
-                    if Self::draw_button_image(ui, Self::IMAGE_REPLAY, app.replay) {
-                        app.replay = !app.replay;
-                    }
+                        if Self::draw_button_image(
+                            ui,
+                            Self::IMAGE_RANDOM,
+                            app.random,
+                            app.state.setting.window_theme,
+                        ) {
+                            app.random = !app.random;
+                        }
 
-                    if Self::draw_button_image(ui, Self::IMAGE_RANDOM, app.random) {
-                        app.random = !app.random;
-                    }
+                        //================================================================
 
-                    //================================================================
+                        ui.separator();
 
-                    ui.separator();
+                        let play_time = Self::format_time(app.sink.get_pos().as_secs() as usize);
+                        let song_time = Self::format_time(active.3 as usize);
 
-                    let play_time = Self::format_time(app.sink.get_pos().as_secs() as usize);
-                    let song_time = Self::format_time(active.3 as usize);
+                        ui.label(format!("{play_time}/{song_time}"));
 
-                    ui.label(format!("{play_time}/{song_time}"));
+                        let mut seek = app.sink.get_pos().as_secs();
 
-                    let mut seek = app.sink.get_pos().as_secs();
+                        if ui
+                            .add(
+                                Slider::new(&mut seek, 0..=active.3)
+                                    .trailing_fill(true)
+                                    .show_value(false),
+                            )
+                            .changed()
+                        {
+                            app.song_seek(seek as i64, false);
+                        }
 
-                    if ui
-                        .add(
-                            Slider::new(&mut seek, 0..=active.3)
-                                .trailing_fill(true)
-                                .show_value(false),
-                        )
-                        .changed()
-                    {
-                        app.song_seek(seek as i64, false);
-                    }
+                        //================================================================
 
-                    //================================================================
+                        ui.separator();
 
-                    ui.separator();
+                        let image = match app.sink.volume() {
+                            0.00 => Self::IMAGE_VOLUME_A,
+                            0.00..0.33 => Self::IMAGE_VOLUME_B,
+                            0.33..0.66 => Self::IMAGE_VOLUME_C,
+                            _ => Self::IMAGE_VOLUME_D,
+                        };
 
-                    let image = match app.sink.volume() {
-                        0.00 => Self::IMAGE_VOLUME_A,
-                        0.00..0.33 => Self::IMAGE_VOLUME_B,
-                        0.33..0.66 => Self::IMAGE_VOLUME_C,
-                        _ => Self::IMAGE_VOLUME_D,
-                    };
+                        ui.add(egui::Image::new(image).fit_to_exact_size(Vec2::new(32.0, 32.0)));
 
-                    ui.add(egui::Image::new(image).fit_to_exact_size(Vec2::new(32.0, 32.0)));
+                        let mut volume = app.sink.volume();
 
-                    let mut volume = app.sink.volume();
-
-                    if ui
-                        .add(
-                            Slider::new(&mut volume, 0.0..=1.0)
-                                .trailing_fill(true)
-                                .show_value(false),
-                        )
-                        .changed()
-                    {
-                        app.song_set_volume(volume);
-                    }
-                });
+                        if ui
+                            .add(
+                                Slider::new(&mut volume, 0.0..=1.0)
+                                    .trailing_fill(true)
+                                    .show_value(false),
+                            )
+                            .changed()
+                        {
+                            app.song_set_volume(volume);
+                        }
+                    });
+                })
             });
         }
     }
 
-    // draw the L-most panel.
-    fn draw_panel_side_a(app: &mut App, context: &egui::Context) {
-        egui::SidePanel::left("panel_0")
-            .resizable(true)
-            .show(context, |ui| {
-                ui.add_space(6.0);
-                ui.text_edit_singleline(&mut app.search_state.0);
+    fn draw_panel_track(app: &mut App, context: &egui::Context) {
+        let rect = context.available_rect();
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, artist) in app.state.library.list_artist.iter().enumerate() {
-                        if ui
-                            .selectable_value(&mut app.select_state.0, Some(i), &artist.name)
-                            .clicked()
-                        {
-                            app.select_state.1 = None;
-                        }
-                    }
-                });
-            });
-    }
-
-    // draw the center panel.
-    fn draw_panel_center(app: &mut App, context: &egui::Context) {
-        egui::CentralPanel::default().show(context, |ui| {
-            ui.text_edit_singleline(&mut app.search_state.1);
-
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(select_0) = &app.select_state.0 {
-                    let artist = app
-                        .state
-                        .library
-                        .list_artist
-                        .get(*select_0)
-                        .expect("draw_panel_center(): Incorrect unwrap.");
-
-                    for (i, album) in artist.list_album.iter().enumerate() {
-                        if album
-                            .name
-                            .to_lowercase()
-                            .contains(&app.search_state.1.to_lowercase().trim())
-                        {
-                            if ui
-                                .selectable_value(&mut app.select_state.1, Some(i), &album.name)
-                                .clicked()
-                            {
-                                app.select_state.2 = None;
-                            }
-                        }
-                    }
-                }
-            });
-        });
-    }
-
-    // draw the R-most panel.
-    fn draw_panel_side_b(app: &mut App, context: &egui::Context) {
         let mut click = false;
 
-        egui::SidePanel::right("panel_1")
-            .resizable(true)
+        egui::TopBottomPanel::bottom("panel_track")
+            .resizable(false)
+            .exact_height(rect.max.y / 2.0)
             .show(context, |ui| {
                 ui.add_space(6.0);
                 ui.text_edit_singleline(&mut app.search_state.2);
+                ui.separator();
 
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if let Some(select_1) = &app.select_state.1 {
-                            let artist = app
-                                .state
-                                .library
-                                .list_artist
-                                .get(*app.select_state.0.as_ref().unwrap())
-                                .expect("draw_panel_side_b(): Incorrect unwrap (artist).");
-                            let album = artist
-                                .list_album
-                                .get(*select_1)
-                                .expect("draw_panel_side_b(): Incorrect unwrap (album).");
+                if let Some(group) = app.select_state.0
+                    && let Some(album) = app.select_state.1
+                {
+                    let group = app.state.library.list_artist.get(group).unwrap();
+                    let album = group.list_album.get(album).unwrap();
 
-                            for (i, song) in album.list_song.iter().enumerate() {
-                                if song
-                                    .name
-                                    .to_lowercase()
-                                    .contains(&app.search_state.2.to_lowercase().trim())
-                                {
-                                    if ui
-                                        .selectable_value(
-                                            &mut app.select_state.2,
-                                            Some(i),
-                                            &song.name,
-                                        )
-                                        .clicked()
-                                    {
-                                        click = true;
-                                    }
-                                }
+                    let table = TableBuilder::new(ui)
+                        .striped(true)
+                        .sense(egui::Sense::click())
+                        .column(Column::auto())
+                        .column(Column::remainder())
+                        .column(Column::remainder())
+                        .column(Column::auto())
+                        .header(16.0, |mut header| {
+                            header.col(|ui| {
+                                ui.strong("Track");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Title");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Genre");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Time");
+                            });
+                        });
+
+                    table.body(|ui| {
+                        ui.rows(16.0, album.list_song.len(), |mut row| {
+                            let i = row.index();
+                            if let Some(select) = app.select_state.2 {
+                                row.set_selected(i == select);
                             }
-                        }
+                            let track = album.list_song.get(i).unwrap();
+
+                            row.col(|ui| {
+                                let order = {
+                                    if let Some(order) = track.track {
+                                        order.to_string()
+                                    } else {
+                                        "".to_string()
+                                    }
+                                };
+                                ui.add(egui::Label::new(&order).selectable(false));
+                            });
+
+                            row.col(|ui| {
+                                ui.add(egui::Label::new(&track.name).selectable(false));
+                            });
+
+                            row.col(|ui| {
+                                ui.add(egui::Label::new("foo").selectable(false));
+                            });
+
+                            row.col(|ui| {
+                                ui.add(egui::Label::new("bar").selectable(false));
+                            });
+
+                            if row.response().clicked() {
+                                app.select_state.2 = Some(i);
+                                click = true;
+                            }
+                        });
                     });
+                }
             });
 
         if click {
             app.song_add();
         }
+    }
+
+    fn draw_panel_group(app: &mut App, context: &egui::Context) {
+        let rect = context.available_rect();
+
+        egui::SidePanel::left("panel_group")
+            .resizable(false)
+            .exact_width(rect.max.x / 2.0)
+            .show(context, |ui| {
+                let mut sort = false;
+
+                ui.add_space(6.0);
+
+                if ui.text_edit_singleline(&mut app.search_state.0).changed() {
+                    app.state.filter_group.clear();
+                    app.state.filter_album.clear();
+                    app.state.filter_track.clear();
+
+                    for (i, group) in app.state.library.list_artist.iter().enumerate() {
+                        if group
+                            .name
+                            .to_lowercase()
+                            .trim()
+                            .contains(&app.search_state.0.to_lowercase().trim())
+                        {
+                            app.state.filter_group.push(i);
+                        }
+                    }
+                };
+
+                ui.separator();
+
+                let table = TableBuilder::new(ui)
+                    .striped(true)
+                    .sense(egui::Sense::click())
+                    .column(Column::remainder())
+                    .header(16.0, |mut header| {
+                        header.col(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong("Group");
+                                if ui.button("⬆/⬇").clicked() {
+                                    sort = true;
+                                }
+                            });
+                        });
+                    });
+
+                table.body(|ui| {
+                    ui.rows(16.0, app.state.filter_group.len(), |mut row| {
+                        let i = row.index();
+                        if let Some(select) = app.select_state.0 {
+                            row.set_selected(i == select);
+                        }
+
+                        let group = app.state.filter_group.get(i).unwrap();
+                        let group = app.state.library.list_artist.get(*group).unwrap();
+
+                        row.col(|ui| {
+                            ui.add(egui::Label::new(&group.name).selectable(false));
+                        });
+
+                        if row.response().clicked() {
+                            println!("foo");
+                            app.select_state.0 = Some(i);
+                            app.state.filter_album = (0..group.list_album.len()).collect();
+                            app.select_state.1 = None;
+                        }
+                    });
+                });
+
+                if sort {
+                    app.state.filter_group.reverse();
+                }
+            });
+    }
+
+    fn draw_panel_album(app: &mut App, context: &egui::Context) {
+        let rect = context.available_rect();
+
+        egui::SidePanel::right("panel_album")
+            .resizable(false)
+            .exact_width(rect.max.x / 2.0)
+            .show(context, |ui| {
+                if let Some(select) = app.select_state.0 {
+                    let mut sort = false;
+
+                    ui.add_space(6.0);
+
+                    let artist = app.state.library.list_artist.get(select).unwrap();
+
+                    if ui.text_edit_singleline(&mut app.search_state.1).changed() {
+                        app.state.filter_album.clear();
+
+                        for (i, album) in artist.list_album.iter().enumerate() {
+                            if album
+                                .name
+                                .to_lowercase()
+                                .trim()
+                                .contains(&app.search_state.1.to_lowercase().trim())
+                            {
+                                app.state.filter_album.push(i);
+                            }
+                        }
+                    };
+
+                    ui.separator();
+
+                    let table = TableBuilder::new(ui)
+                        .striped(true)
+                        .sense(egui::Sense::click())
+                        .column(Column::remainder())
+                        .header(16.0, |mut header| {
+                            header.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.strong("Album");
+                                    if ui.button("⬆/⬇").clicked() {
+                                        sort = true;
+                                    }
+                                });
+                            });
+                        });
+
+                    table.body(|ui| {
+                        ui.rows(16.0, app.state.filter_album.len(), |mut row| {
+                            let i = row.index();
+                            if let Some(select) = app.select_state.1 {
+                                row.set_selected(i == select);
+                            }
+
+                            let album = app.state.filter_album.get(i).unwrap();
+                            let album = artist.list_album.get(*album).unwrap();
+
+                            row.col(|ui| {
+                                ui.add(egui::Label::new(&album.name).selectable(false));
+                            });
+
+                            if row.response().clicked() {
+                                println!("foo");
+                                app.select_state.1 = Some(i);
+                                app.state.filter_track = (0..album.list_song.len()).collect();
+                                app.select_state.2 = None;
+                            }
+                        });
+                    });
+
+                    if sort {
+                        app.state.filter_album.reverse();
+                    }
+                }
+            });
     }
 
     //================================================================

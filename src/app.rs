@@ -61,6 +61,8 @@ use eframe::egui::Shape;
 use eframe::egui::TextureOptions;
 use eframe::egui::{self, Slider, Vec2};
 use mlua::prelude::*;
+use notify_rust::Hint;
+use notify_rust::Notification;
 use rodio::OutputStream;
 use rodio::OutputStreamHandle;
 use rodio::Sink;
@@ -69,9 +71,15 @@ use serde::{Deserialize, Serialize};
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, PlatformConfig};
 use std::fs::File;
 use std::io::BufReader;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::Duration;
+use tray_icon::TrayIconEvent;
+use tray_icon::menu::MenuEvent;
+use tray_icon::menu::MenuItem;
+use tray_icon::menu::MenuItemBuilder;
+use tray_icon::menu::PredefinedMenuItem;
+use tray_icon::{TrayIconBuilder, menu::Menu};
 
 //================================================================
 
@@ -80,14 +88,26 @@ use std::time::Duration;
 pub struct State {
     pub library: Library,
     pub setting: Setting,
+    pub filter_group: Vec<usize>,
+    pub filter_album: Vec<usize>,
+    pub filter_track: Vec<usize>,
 }
 
 impl State {
     fn new() -> (Self, bool) {
         let (library, new_library) = Library::new();
-        let (setting, new_setting) = Setting::new();
+        let (setting, _) = Setting::new();
 
-        (Self { library, setting }, new_library || new_setting)
+        (
+            Self {
+                filter_group: (0..library.list_artist.len()).collect(),
+                filter_album: Vec::new(),
+                filter_track: Vec::new(),
+                library,
+                setting,
+            },
+            new_library,
+        )
     }
 }
 
@@ -104,7 +124,10 @@ pub struct App {
     stream: OutputStream,
     handle: OutputStreamHandle,
     media: MediaControls,
-    event: Receiver<MediaControlEvent>,
+    ctx: egui::Context,
+    click_tx: Sender<String>,
+    click_rx: Receiver<String>,
+    event_rx: Receiver<MediaControlEvent>,
 }
 
 impl App {
@@ -162,15 +185,34 @@ impl App {
 
             let (artist, album, song) = self.get_play_state();
 
-            self.script.call(
-                Script::CALL_PLAY,
-                (
-                    artist.name.as_str(),
-                    album.name.as_str(),
-                    song.name.as_str(),
-                    time,
-                ),
-            );
+            let t_0 = artist.name.clone();
+            let t_1 = album.name.clone();
+            let t_2 = song.name.clone();
+
+            self.script.call(Script::CALL_PLAY, (t_0, t_1, t_2, time));
+
+            let t_0 = artist.name.clone();
+            let t_1 = album.name.clone();
+            let t_2 = song.name.clone();
+            let t_3 = album.icon.clone();
+            let cx = self.ctx.clone();
+            let tx = self.click_tx.clone();
+
+            /*std::thread::spawn(move || {
+                Notification::new()
+                    .summary("Melodix")
+                    .image_path("/home/think/Pictures/trent.jpg")
+                    .icon("/home/think/Pictures/trent.jpg")
+                    .body(&format!("{t_0}\n{t_1}\n{t_2}"))
+                    .action("skip-a", "Skip - 1") // IDENTIFIER, LABEL
+                    .action("skip-b", "Skip + 1") // IDENTIFIER, LABEL
+                    .show()
+                    .unwrap()
+                    .wait_for_action(move |action| {
+                        cx.request_repaint();
+                        tx.send(action.to_string()).unwrap();
+                    });
+            });*/
 
             self.media
                 .set_metadata(MediaMetadata {
@@ -281,17 +323,51 @@ impl App {
             hwnd: None,
         };
 
+        cc.egui_ctx.set_zoom_factor(state.setting.window_scale);
+
+        if state.setting.window_theme {
+            cc.egui_ctx.set_theme(egui::Theme::Light);
+        } else {
+            cc.egui_ctx.set_theme(egui::Theme::Dark);
+        }
+
         let mut media = MediaControls::new(config).unwrap();
 
-        let (rx, event) = std::sync::mpsc::channel();
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let (click_tx, click_rx) = std::sync::mpsc::channel();
 
         let clone = cc.egui_ctx.clone();
         media
             .attach(move |event: MediaControlEvent| {
                 clone.request_repaint();
-                rx.send(event).unwrap();
+                event_tx.send(event).unwrap();
             })
             .unwrap();
+
+        // Since egui uses winit under the hood and doesn't use gtk on Linux, and we need gtk for
+        // the tray icon to show up, we need to spawn a thread
+        // where we initialize gtk and create the tray_icon
+        #[cfg(target_os = "linux")]
+        std::thread::spawn(|| {
+            use tray_icon::menu::Menu;
+
+            gtk::init().unwrap();
+
+            let tray_menu = tray_icon::menu::Menu::with_items(&[
+                &MenuItemBuilder::new().text("Play").enabled(true).build(),
+                &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
+                &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
+                &MenuItemBuilder::new().text("Exit").enabled(true).build(),
+            ])
+            .unwrap();
+            let tray_icon = TrayIconBuilder::new()
+                .with_menu(Box::new(tray_menu))
+                .with_tooltip("system-tray - tray icon library!")
+                .build()
+                .unwrap();
+
+            gtk::main();
+        });
 
         Self {
             state,
@@ -305,15 +381,44 @@ impl App {
             handle,
             sink,
             media,
-            event,
             layout: Layout::new(default),
+            ctx: cc.egui_ctx.clone(),
+            click_tx,
+            click_rx,
+            event_rx,
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
-        if let Ok(event) = self.event.try_recv() {
+        // self.handle_media_event();
+        // self.handle_tray_event();
+        // self.handle_menu_event(context);
+
+        if let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            println!("tray event: {:?}", event);
+        }
+
+        if let Ok(event) = MenuEvent::receiver().try_recv() {
+            match event.id.0.as_str() {
+                "1" => self.song_toggle(),
+                "2" => self.song_skip_a(),
+                "3" => self.song_skip_b(),
+                "4" => context.send_viewport_cmd(egui::ViewportCommand::Close),
+                _ => {}
+            }
+        }
+
+        if let Ok(click) = self.click_rx.try_recv() {
+            match click.as_str() {
+                "skip-a" => self.song_skip_a(),
+                "skip-b" => self.song_skip_b(),
+                _ => {}
+            }
+        }
+
+        if let Ok(event) = self.event_rx.try_recv() {
             match event {
                 MediaControlEvent::Play => self.song_play(),
                 MediaControlEvent::Pause => self.song_pause(),

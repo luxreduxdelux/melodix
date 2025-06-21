@@ -49,9 +49,14 @@
 */
 
 use std::collections::HashMap;
+use std::default;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
 
 use crate::app::*;
 use crate::layout::*;
+use crate::library::*;
 use crate::setting::*;
 
 use mlua::prelude::*;
@@ -94,21 +99,28 @@ pub struct Module {
 }
 
 impl Module {
-    pub fn new(lua: &Lua, path: &str) -> (Self, mlua::Table) {
-        let file = std::fs::read_to_string(path).unwrap();
-        let table = lua.load(file).eval::<mlua::Table>().unwrap();
+    pub fn new(lua: &Lua, path: &str) -> Result<(Self, mlua::Table), ()> {
+        let file = std::fs::read_to_string(path).map_err(|_| ())?;
+        let table = lua.load(file).eval::<mlua::Table>().map_err(|_| ())?;
         let serde = LuaDeserializeOptions::new().deny_unsupported_types(false);
         let value = lua
             .from_value_with(mlua::Value::Table(table.clone()), serde)
-            .unwrap();
+            .map_err(|_| ())?;
 
-        (value, table)
+        Ok((value, table))
     }
 }
 
 pub struct Script {
     pub lua: Lua,
     pub script_list: Vec<(Module, mlua::Table)>,
+}
+
+#[derive(Default)]
+pub struct ScriptState {
+    pub text: Arc<Mutex<String>>,
+    pub library: Arc<Library>,
+    pub setting: Arc<Setting>,
 }
 
 impl Script {
@@ -129,7 +141,9 @@ impl Script {
 
         for file in std::fs::read_dir(Self::PATH_SCRIPT).unwrap() {
             let file = file.unwrap().path().display().to_string();
-            script_list.push(Module::new(&lua, &file));
+            if let Ok(module) = Module::new(&lua, &file) {
+                script_list.push(module);
+            }
         }
 
         let script = Self { lua, script_list };
@@ -139,12 +153,17 @@ impl Script {
         script
     }
 
-    pub fn call<M: IntoLuaMulti + Copy>(&self, entry: &'static str, member: M) {
+    pub fn call<M: IntoLuaMulti + Send + Clone + 'static>(&self, entry: &'static str, member: M) {
         for script in &self.script_list {
             if let Ok(function) = script.1.get::<mlua::Function>(entry) {
-                if let Err(error) = function.call::<()>((&script.1, member)) {
-                    App::error(&error.to_string());
-                }
+                let table = script.1.clone();
+                let clone = member.clone();
+
+                tokio::spawn(async move {
+                    if let Err(error) = function.call_async::<()>((table, clone)).await {
+                        App::error(&error.to_string());
+                    }
+                });
             }
         }
     }

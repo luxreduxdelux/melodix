@@ -54,11 +54,14 @@ use serde::{Deserialize, Serialize};
 
 //================================================================
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Setting {
+    pub window_scale: f32,
     pub window_theme: bool,
     pub window_style: bool,
-    pub window_notify: bool,
+    pub window_media: bool,
+    pub window_tray: bool,
+    pub window_push: bool,
     pub library_path: String,
     pub library_find: bool,
     pub script_allow: bool,
@@ -76,6 +79,23 @@ impl Setting {
         }
 
         (Self::default(), true)
+    }
+}
+
+impl Default for Setting {
+    fn default() -> Self {
+        Self {
+            window_scale: 1.0,
+            window_theme: false,
+            window_style: false,
+            window_media: true,
+            window_tray: true,
+            window_push: true,
+            library_path: String::default(),
+            library_find: false,
+            script_allow: true,
+            update_check: true,
+        }
     }
 }
 
