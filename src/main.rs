@@ -58,7 +58,7 @@ mod window;
 //================================================================
 
 use crate::app::*;
-use eframe::egui;
+use eframe::egui::{self, IconData};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
@@ -81,9 +81,12 @@ fn main() -> eframe::Result {
         })
     });
 
+    let i = eframe::icon_data::from_png_bytes(include_bytes!("../data/icon.png")).unwrap();
+
     // set window data.
     let configuration = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 768.0]),
+        viewport: egui::ViewportBuilder::default().with_icon(std::sync::Arc::new(i)),
+        centered: true,
         ..Default::default()
     };
 

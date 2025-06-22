@@ -77,6 +77,8 @@ pub struct System {
 }
 
 impl System {
+    const TRAY_ICON: &[u8] = include_bytes!("../data/tray.png");
+
     pub fn new(cc: &CreationContext) -> Self {
         let (stream, handle) = rodio::OutputStream::try_default().unwrap();
         let sink = rodio::Sink::try_new(&handle).unwrap();
@@ -116,9 +118,13 @@ impl System {
                 &MenuItemBuilder::new().text("Exit").enabled(true).build(),
             ])
             .unwrap();
+
+            let image = image::load_from_memory(Self::TRAY_ICON)
+                .unwrap()
+                .into_bytes();
             let tray_icon = TrayIconBuilder::new()
                 .with_menu(Box::new(tray_menu))
-                .with_tooltip("system-tray - tray icon library!")
+                .with_icon(tray_icon::Icon::from_rgba(image, 32, 32).unwrap())
                 .build()
                 .unwrap();
 
@@ -137,9 +143,12 @@ impl System {
     }
 
     pub fn poll_event(&mut self) -> Option<MediaControlEvent> {
+        /*
+        TO-DO does not work on linux, though should support showing/hiding the window on any other OS
         if let Ok(event) = TrayIconEvent::receiver().try_recv() {
             println!("tray event: {:?}", event);
         }
+        */
 
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id.0.as_str() {
@@ -166,13 +175,17 @@ impl System {
         None
     }
 
-    pub fn make_event(event: MediaControlEvent, app: &mut App, context: &egui::Context) {
+    pub fn make_event(
+        event: MediaControlEvent,
+        app: &mut App,
+        context: &egui::Context,
+    ) -> anyhow::Result<()> {
         match event {
             MediaControlEvent::Play => app.track_play(),
             MediaControlEvent::Pause => app.track_pause(),
             MediaControlEvent::Toggle => app.track_toggle(),
-            MediaControlEvent::Next => app.track_skip_b(context),
-            MediaControlEvent::Previous => app.track_skip_a(context),
+            MediaControlEvent::Next => app.track_skip_b(context)?,
+            MediaControlEvent::Previous => app.track_skip_a(context)?,
             MediaControlEvent::Stop => app.track_stop(),
             MediaControlEvent::Seek(seek_direction) => match seek_direction {
                 souvlaki::SeekDirection::Forward => app.track_seek(10, true),
@@ -192,5 +205,7 @@ impl System {
             MediaControlEvent::Raise => context.send_viewport_cmd(egui::ViewportCommand::Focus),
             MediaControlEvent::Quit => context.send_viewport_cmd(egui::ViewportCommand::Close),
         }
+
+        Ok(())
     }
 }

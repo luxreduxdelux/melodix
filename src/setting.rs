@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 
 //================================================================
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Setting {
     pub window_scale: f32,
     pub window_theme: bool,

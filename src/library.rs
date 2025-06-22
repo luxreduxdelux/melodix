@@ -64,29 +64,22 @@ use walkdir::WalkDir;
 
 use rayon::prelude::*;
 
-#[derive(Serialize, Deserialize)]
-pub enum Queue {
-    Path(String),
-    Index(usize, usize, usize),
-}
-
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Library {
     pub list_group: Vec<Group>,
-    pub list_queue: Vec<Queue>,
 }
 
 impl Library {
     const PATH_LIBRARY: &'static str = "library.data";
 
-    pub fn new() -> (Self, bool) {
+    pub fn new() -> Self {
         if let Ok(file) = std::fs::read(Self::PATH_LIBRARY) {
             if let Ok(library) = postcard::from_bytes(&file) {
-                return (library, false);
+                return library;
             }
         }
 
-        (Self::default(), true)
+        Self::default()
     }
 
     pub fn scan(path: &str) -> Self {
@@ -138,10 +131,7 @@ impl Library {
             }
         }
 
-        let library = Self {
-            list_group,
-            list_queue: Vec::new(),
-        };
+        let library = Self { list_group };
 
         let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
         std::fs::write("library.data", serialize).unwrap();
