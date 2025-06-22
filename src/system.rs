@@ -67,10 +67,10 @@ use tray_icon::menu::MenuItemBuilder;
 //================================================================
 
 pub struct System {
-    sink: Sink,
+    pub sink: Sink,
     stream: OutputStream,
     handle: OutputStreamHandle,
-    media: MediaControls,
+    pub media: MediaControls,
     click_tx: Sender<String>,
     click_rx: Receiver<String>,
     event_rx: Receiver<MediaControlEvent>,
@@ -168,26 +168,26 @@ impl System {
 
     pub fn make_event(event: MediaControlEvent, app: &mut App, context: &egui::Context) {
         match event {
-            MediaControlEvent::Play => app.song_play(),
-            MediaControlEvent::Pause => app.song_pause(),
-            MediaControlEvent::Toggle => app.song_toggle(),
-            MediaControlEvent::Next => app.song_skip_b(),
-            MediaControlEvent::Previous => app.song_skip_a(),
-            MediaControlEvent::Stop => app.song_stop(),
+            MediaControlEvent::Play => app.track_play(),
+            MediaControlEvent::Pause => app.track_pause(),
+            MediaControlEvent::Toggle => app.track_toggle(),
+            MediaControlEvent::Next => app.track_skip_b(context),
+            MediaControlEvent::Previous => app.track_skip_a(context),
+            MediaControlEvent::Stop => app.track_stop(),
             MediaControlEvent::Seek(seek_direction) => match seek_direction {
-                souvlaki::SeekDirection::Forward => app.song_seek(10, true),
-                souvlaki::SeekDirection::Backward => app.song_seek(-10, true),
+                souvlaki::SeekDirection::Forward => app.track_seek(10, true),
+                souvlaki::SeekDirection::Backward => app.track_seek(-10, true),
             },
             MediaControlEvent::SeekBy(seek_direction, duration) => match seek_direction {
-                souvlaki::SeekDirection::Forward => app.song_seek(duration.as_secs() as i64, true),
+                souvlaki::SeekDirection::Forward => app.track_seek(duration.as_secs() as i64, true),
                 souvlaki::SeekDirection::Backward => {
-                    app.song_seek(-(duration.as_secs() as i64), true)
+                    app.track_seek(-(duration.as_secs() as i64), true)
                 }
             },
             MediaControlEvent::SetPosition(media_position) => {
-                app.song_seek(media_position.0.as_secs() as i64, false)
+                app.track_seek(media_position.0.as_secs() as i64, false)
             }
-            MediaControlEvent::SetVolume(volume) => app.song_set_volume(volume as f32),
+            MediaControlEvent::SetVolume(volume) => app.track_set_volume(volume as f32),
             MediaControlEvent::OpenUri(_) => todo!(),
             MediaControlEvent::Raise => context.send_viewport_cmd(egui::ViewportCommand::Focus),
             MediaControlEvent::Quit => context.send_viewport_cmd(egui::ViewportCommand::Close),

@@ -48,7 +48,6 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use crate::layout::*;
 use crate::library::*;
 use crate::script::*;
 use crate::setting::*;
@@ -64,7 +63,7 @@ use std::time::Duration;
 
 //================================================================
 
-// TO-DO minimize/hide window, tray icon, welcome menu, configuration menu, plug-in menu, plug-in setting data, add Artist/Album/Song header
+// TO-DO minimize/hide window, tray icon, welcome menu, configuration menu, plug-in menu, plug-in setting data, add Group/Album/Track header
 
 pub struct App {
     pub library: Library,
@@ -75,174 +74,116 @@ pub struct App {
 }
 
 impl App {
-    // get the currently active artist, album, and song.
-    pub fn get_play_state(&self) -> (&Artist, &Album, &Song) {
-        let artist = self
-            .state
+    // get the currently active group, album, and track.
+    pub fn get_play_state(&self) -> (&Group, &Album, &Track) {
+        let group = self
             .library
-            .list_artist
-            .get(self.active_state.as_ref().unwrap().0)
+            .list_group
+            .get(self.window.active.as_ref().unwrap().0)
             .unwrap();
-        let album = artist
+        let album = group
             .list_album
-            .get(self.active_state.as_ref().unwrap().1)
+            .get(self.window.active.as_ref().unwrap().1)
             .unwrap();
-        let song = album
-            .list_song
-            .get(self.active_state.as_ref().unwrap().2)
+        let track = album
+            .list_track
+            .get(self.window.active.as_ref().unwrap().2)
             .unwrap();
 
-        (artist, album, song)
+        (group, album, track)
     }
 
-    pub fn song_add(&mut self, context: &egui::Context) {
-        let clone = self.active_state;
+    pub fn track_add(&mut self, track: (usize, usize, usize), context: &egui::Context) {
+        let clone = self.window.active;
 
-        self.active_state = Some((
-            self.select_state
-                .0
-                .expect("song_add(): Incorrect unwrap on member 0."),
-            self.select_state
-                .1
-                .expect("song_add(): Incorrect unwrap on member 1."),
-            self.select_state
-                .2
-                .expect("song_add(): Incorrect unwrap on member 2."),
-        ));
+        self.window.active = Some((track.0, track.1, track.2));
 
         let path = {
-            let (_, _, song) = self.get_play_state();
-            song.path.clone()
+            let (_, _, track) = self.get_play_state();
+            track.path.clone()
         };
 
         if let Ok(file) = std::fs::File::open(path)
             && let Ok(source) = rodio::Decoder::new(BufReader::new(file))
         {
-            let state = self.active_state.unwrap();
-            self.active_state = Some((state.0, state.1, state.2));
+            let state = self.window.active.unwrap();
+            self.window.active = Some((state.0, state.1, state.2));
 
-            self.sink.stop();
-            self.sink.append(source);
-            self.sink.play();
+            self.system.sink.stop();
+            self.system.sink.append(source);
+            self.system.sink.play();
 
-            let (artist, album, song) = self.get_play_state();
+            let (group, album, track) = self.get_play_state();
 
-            let t_0 = artist.name.clone();
+            let t_0 = group.name.clone();
             let t_1 = album.name.clone();
-            let t_2 = song.name.clone();
+            let t_2 = track.name.clone();
 
             self.script
-                .call(Script::CALL_PLAY, (t_0, t_1, t_2, song.time));
-
-            let t_0 = artist.name.clone();
-            let t_1 = album.name.clone();
-            let t_2 = song.name.clone();
-            let t_3 = album.icon.clone();
-            let tx = self.click_tx.clone();
-
-            /*std::thread::spawn(move || {
-                Notification::new()
-                    .summary("Melodix")
-                    .image_path("/home/think/Pictures/trent.jpg")
-                    .icon("/home/think/Pictures/trent.jpg")
-                    .body(&format!("{t_0}\n{t_1}\n{t_2}"))
-                    .action("skip-a", "Skip - 1") // IDENTIFIER, LABEL
-                    .action("skip-b", "Skip + 1") // IDENTIFIER, LABEL
-                    .show()
-                    .unwrap()
-                    .wait_for_action(move |action| {
-                        cx.request_repaint();
-                        tx.send(action.to_string()).unwrap();
-                    });
-            });*/
-
-            self.media
-                .set_metadata(MediaMetadata {
-                    title: Some(&song.name.clone()),
-                    album: Some(&album.name.clone()),
-                    artist: Some(&artist.name.clone()),
-                    cover_url: album.icon.clone().as_deref(),
-                    duration: None,
-                })
-                .unwrap();
+                .call(Script::CALL_PLAY, (t_0, t_1, t_2, track.time));
         } else {
-            self.active_state = clone;
+            self.window.active = clone;
         }
     }
 
-    pub fn song_toggle(&self) {
-        if self.sink.is_paused() {
-            self.sink.play();
+    pub fn track_toggle(&self) {
+        if self.system.sink.is_paused() {
+            self.system.sink.play();
 
             self.script.call(Script::CALL_PLAY, ());
         } else {
-            self.sink.pause();
+            self.system.sink.pause();
 
             self.script.call(Script::CALL_PAUSE, ());
         }
     }
 
-    pub fn song_seek(&self, seek: i64, delta: bool) {
+    pub fn track_seek(&self, seek: i64, delta: bool) {
         let seek = {
             if delta {
-                seek + self.sink.get_pos().as_secs() as i64
+                seek + self.system.sink.get_pos().as_secs() as i64
             } else {
                 seek
             }
         };
 
-        self.sink
+        self.system
+            .sink
             .try_seek(Duration::from_secs(seek as u64))
             .unwrap();
     }
 
-    pub fn song_play(&self) {
-        self.sink.play();
+    pub fn track_play(&self) {
+        self.system.sink.play();
     }
 
-    pub fn song_pause(&self) {
-        self.sink.pause();
+    pub fn track_pause(&self) {
+        self.system.sink.pause();
     }
 
-    pub fn song_set_volume(&self, volume: f32) {
-        self.sink.set_volume(volume);
+    pub fn track_set_volume(&self, volume: f32) {
+        self.system.sink.set_volume(volume);
     }
 
-    pub fn song_stop(&mut self) {
-        self.active_state = None;
-        self.sink.stop();
+    pub fn track_stop(&mut self) {
+        self.window.active = None;
+        self.system.sink.stop();
     }
 
-    pub fn song_skip_a(&mut self) {
-        /*
-        let track = {
-            let (_, _, song) = self.active_state.unwrap();
-            let (_, _, song) = self.active_state.unwrap();
-
-            album.list_song.get(song - 1)
-        };
-
-        if let Some(track) = track {
-            self.select_state.2 = Some(track);
-            self.song_add();
+    pub fn track_skip_a(&mut self, context: &egui::Context) {
+        if self.window.queue.1 > 0 {
+            if let Some(track) = self.window.queue.0.get(self.window.queue.1 - 1) {
+                self.window.queue.1 -= 1;
+                self.track_add(*track, context);
+            }
         }
-        */
     }
 
-    pub fn song_skip_b(&mut self) {
-        /*
-        let track = {
-            let (_, album, song) = self.get_play_state();
-
-            // TO-DO not a good way to find the next track. will crash on under/over-flow.
-            album.list_song.get(song.track - 1).map(|get| get.track)
-        };
-
-        if let Some(track) = track {
-            self.select_state.2 = Some(track);
-            self.song_add();
+    pub fn track_skip_b(&mut self, context: &egui::Context) {
+        if let Some(track) = self.window.queue.0.get(self.window.queue.1 + 1) {
+            self.window.queue.1 += 1;
+            self.track_add(*track, context);
         }
-        */
     }
 
     pub fn error(message: &str) {
@@ -256,14 +197,13 @@ impl App {
     pub fn new(context: &CreationContext) -> Self {
         let (library, new_library) = Library::new();
         let setting = Setting::new(context);
-        let script = Script::new(&setting);
 
         Self {
-            library,
-            setting,
-            script,
+            script: Script::new(&setting),
             window: Window::new(new_library),
             system: System::new(context),
+            library,
+            setting,
         }
     }
 }
@@ -274,6 +214,6 @@ impl eframe::App for App {
             System::make_event(event, self, context);
         }
 
-        Layout::draw(self, context);
+        Window::draw(self, context);
     }
 }
