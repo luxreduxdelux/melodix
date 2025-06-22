@@ -79,62 +79,59 @@ impl App {
         let group = self
             .library
             .list_group
-            .get(self.window.active.as_ref().unwrap().0)
+            .get(self.window.state.as_ref().unwrap().0)
             .unwrap();
         let album = group
             .list_album
-            .get(self.window.active.as_ref().unwrap().1)
+            .get(self.window.state.as_ref().unwrap().1)
             .unwrap();
         let track = album
             .list_track
-            .get(self.window.active.as_ref().unwrap().2)
+            .get(self.window.state.as_ref().unwrap().2)
             .unwrap();
 
         (group, album, track)
     }
 
-    pub fn track_add(&mut self, track: (usize, usize, usize), context: &egui::Context) {
-        let clone = self.window.active;
+    pub fn track_add(
+        &mut self,
+        track: (usize, usize, usize),
+        context: &egui::Context,
+    ) -> anyhow::Result<()> {
+        self.window.state = Some((track.0, track.1, track.2));
 
-        self.window.active = Some((track.0, track.1, track.2));
+        let (_, _, track) = self.get_play_state();
 
-        let path = {
-            let (_, _, track) = self.get_play_state();
-            track.path.clone()
-        };
+        let file = std::fs::File::open(&track.path)?;
+        let file = rodio::Decoder::new(BufReader::new(file))?;
 
-        if let Ok(file) = std::fs::File::open(path)
-            && let Ok(source) = rodio::Decoder::new(BufReader::new(file))
-        {
-            let state = self.window.active.unwrap();
-            self.window.active = Some((state.0, state.1, state.2));
+        let state = self.window.state.unwrap();
+        self.window.state = Some((state.0, state.1, state.2));
 
-            self.system.sink.stop();
-            self.system.sink.append(source);
-            self.system.sink.play();
+        self.system.sink.stop();
+        self.system.sink.append(file);
+        self.system.sink.play();
 
-            let (group, album, track) = self.get_play_state();
+        ScriptData::set_state(self);
+        ScriptData::set_queue(self);
 
-            let t_0 = group.name.clone();
-            let t_1 = album.name.clone();
-            let t_2 = track.name.clone();
+        self.script
+            .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
 
-            self.script
-                .call(Script::CALL_PLAY, (t_0, t_1, t_2, track.time));
-        } else {
-            self.window.active = clone;
-        }
+        Ok(())
     }
 
     pub fn track_toggle(&self) {
         if self.system.sink.is_paused() {
             self.system.sink.play();
 
-            self.script.call(Script::CALL_PLAY, ());
+            self.script
+                .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
         } else {
             self.system.sink.pause();
 
-            self.script.call(Script::CALL_PAUSE, ());
+            self.script
+                .call(Script::CALL_PAUSE, self.system.sink.get_pos().as_secs());
         }
     }
 
@@ -147,43 +144,58 @@ impl App {
             }
         };
 
-        self.system
-            .sink
-            .try_seek(Duration::from_secs(seek as u64))
-            .unwrap();
+        let _ = self.system.sink.try_seek(Duration::from_secs(seek as u64));
+
+        self.script.call(Script::CALL_SEEK, seek);
     }
 
     pub fn track_play(&self) {
         self.system.sink.play();
+
+        self.script.call(Script::CALL_PLAY, ());
     }
 
     pub fn track_pause(&self) {
         self.system.sink.pause();
+
+        self.script.call(Script::CALL_PAUSE, ());
     }
 
     pub fn track_set_volume(&self, volume: f32) {
         self.system.sink.set_volume(volume);
+
+        // TO-DO does there need to be a volume call-back?
     }
 
     pub fn track_stop(&mut self) {
-        self.window.active = None;
+        self.window.state = None;
         self.system.sink.stop();
+
+        self.script.call(Script::CALL_STOP, ());
     }
 
-    pub fn track_skip_a(&mut self, context: &egui::Context) {
+    pub fn track_skip_a(&mut self, context: &egui::Context) -> anyhow::Result<()> {
         if self.window.queue.1 > 0 {
             if let Some(track) = self.window.queue.0.get(self.window.queue.1 - 1) {
                 self.window.queue.1 -= 1;
-                self.track_add(*track, context);
+                self.track_add(*track, context)?
             }
         }
+
+        self.script.call(Script::CALL_SKIP_A, ());
+
+        Ok(())
     }
 
-    pub fn track_skip_b(&mut self, context: &egui::Context) {
+    pub fn track_skip_b(&mut self, context: &egui::Context) -> anyhow::Result<()> {
         if let Some(track) = self.window.queue.0.get(self.window.queue.1 + 1) {
             self.window.queue.1 += 1;
-            self.track_add(*track, context);
+            self.track_add(*track, context)?
         }
+
+        self.script.call(Script::CALL_SKIP_B, ());
+
+        Ok(())
     }
 
     pub fn error(message: &str) {
@@ -195,12 +207,12 @@ impl App {
     }
 
     pub fn new(context: &CreationContext) -> Self {
-        let (library, new_library) = Library::new();
+        let library = Library::new();
         let setting = Setting::new(context);
 
         Self {
-            script: Script::new(&setting),
-            window: Window::new(new_library),
+            script: Script::new(&library, &setting),
+            window: Window::new(&library),
             system: System::new(context),
             library,
             setting,
@@ -211,9 +223,13 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
         if let Some(event) = self.system.poll_event() {
-            System::make_event(event, self, context);
+            if let Err(error) = System::make_event(event, self, context) {
+                Self::error(&error.to_string());
+            }
         }
 
-        Window::draw(self, context);
+        if let Err(error) = Window::draw(self, context) {
+            Self::error(&error.to_string());
+        }
     }
 }

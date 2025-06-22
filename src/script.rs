@@ -116,10 +116,97 @@ pub struct Script {
 }
 
 #[derive(Default)]
-pub struct ScriptState {
-    pub text: Arc<Mutex<String>>,
-    pub library: Arc<Library>,
-    pub setting: Arc<Setting>,
+pub struct ScriptData {
+    library: Library,
+    setting: Setting,
+    state: Option<(usize, usize, usize)>,
+    queue: (Vec<(usize, usize, usize)>, usize),
+}
+
+impl ScriptData {
+    fn set(lua: &Lua, library: &Library, setting: &Setting) -> mlua::Result<()> {
+        lua.set_app_data(Self {
+            library: library.clone(),
+            setting: setting.clone(),
+            state: None,
+            queue: (Vec::default(), 0),
+        });
+
+        let melodix = lua.create_table()?;
+
+        melodix.set("get_library", lua.create_function(Self::get_library)?)?;
+        melodix.set("get_setting", lua.create_function(Self::get_setting)?)?;
+        melodix.set("get_state", lua.create_function(Self::get_state)?)?;
+        melodix.set("get_queue", lua.create_function(Self::get_queue)?)?;
+
+        lua.globals().set("melodix", melodix)?;
+
+        Ok(())
+    }
+
+    fn get_library(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
+        if let Some(data) = lua.app_data_ref::<Self>() {
+            lua.to_value(&data.library)
+        } else {
+            Err(mlua::Error::runtime(
+                "get_library(): Could not get library data.",
+            ))
+        }
+    }
+
+    fn get_setting(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
+        if let Some(data) = lua.app_data_ref::<Self>() {
+            lua.to_value(&data.setting)
+        } else {
+            Err(mlua::Error::runtime(
+                "get_setting(): Could not get setting data.",
+            ))
+        }
+    }
+
+    fn get_state(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
+        if let Some(data) = lua.app_data_ref::<Self>() {
+            lua.to_value(&data.state)
+        } else {
+            Err(mlua::Error::runtime(
+                "get_state(): Could not get state data.",
+            ))
+        }
+    }
+
+    fn get_queue(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
+        if let Some(data) = lua.app_data_ref::<Self>() {
+            lua.to_value(&data.queue)
+        } else {
+            Err(mlua::Error::runtime(
+                "get_queue(): Could not get queue data.",
+            ))
+        }
+    }
+
+    pub fn set_library(app: &App) {
+        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
+            data.library = app.library.clone();
+        }
+    }
+
+    pub fn set_setting(app: &App) {
+        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
+            data.setting = app.setting.clone();
+        }
+    }
+
+    pub fn set_state(app: &App) {
+        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
+            data.state = app.window.state.clone();
+        }
+    }
+
+    pub fn set_queue(app: &App) {
+        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
+            data.queue = app.window.queue.clone();
+        }
+    }
 }
 
 impl Script {
@@ -134,7 +221,7 @@ impl Script {
     pub const CALL_SKIP_B: &'static str = "skip_b";
     pub const CALL_PAUSE: &'static str = "pause";
 
-    pub fn new(setting: &Setting) -> Self {
+    pub fn new(library: &Library, setting: &Setting) -> Self {
         let lua = unsafe { Lua::unsafe_new() };
         let mut script_list = Vec::new();
 
@@ -144,6 +231,8 @@ impl Script {
                 script_list.push(module);
             }
         }
+
+        ScriptData::set(&lua, library, setting);
 
         let script = Self { lua, script_list };
 

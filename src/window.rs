@@ -73,7 +73,7 @@ pub struct Window {
         (Option<usize>, Option<usize>),
         (Option<usize>, Option<usize>),
     ),
-    pub active: Option<(usize, usize, usize)>,
+    pub state: Option<(usize, usize, usize)>,
     pub queue: (Vec<(usize, usize, usize)>, usize),
 }
 
@@ -101,40 +101,42 @@ impl Window {
         egui::include_image!("../data/volume_c.png");
     const IMAGE_VOLUME_D: eframe::egui::ImageSource<'_> =
         egui::include_image!("../data/volume_d.png");
+    const IMAGE_LOGO: eframe::egui::ImageSource<'_> = egui::include_image!("../data/logo.png");
 
     //================================================================
 
-    pub fn new(default: bool) -> Self {
+    pub fn new(library: &Library) -> Self {
         Self {
-            layout: if default {
+            layout: if library.list_group.is_empty() {
                 Layout::Welcome
             } else {
                 Layout::Library
             },
             replay: false,
             random: false,
-            filter: (Vec::default(), Vec::default(), Vec::default()),
+            filter: (
+                (0..library.list_group.len()).collect(),
+                Vec::default(),
+                Vec::default(),
+            ),
             search: (String::default(), String::default(), String::default()),
             select: ((None, None), (None, None), (None, None)),
-            active: None,
+            state: None,
             queue: (Vec::default(), 0),
         }
     }
 
-    pub fn draw(app: &mut App, context: &egui::Context) {
+    pub fn draw(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
         context.request_repaint_after_secs(1.0);
 
-        if app.system.sink.empty() && app.window.active.is_some() {
-            println!("{:?}", app.window.queue);
-
+        if app.system.sink.empty()
+            && let Some(active) = app.window.state
+        {
             if app.window.replay {
-                app.track_add(app.window.active.unwrap(), context);
-            } else {
+                app.track_add(active, context)?;
+            } else if let Some(track) = app.window.queue.0.get(app.window.queue.1 + 1) {
                 app.window.queue.1 += 1;
-
-                if let Some(track) = app.window.queue.0.get(app.window.queue.1) {
-                    app.track_add(*track, context);
-                }
+                app.track_add(*track, context)?;
             }
         }
 
@@ -145,6 +147,9 @@ impl Window {
             Layout::Setup => Self::draw_setup(app, context),
             Layout::About => Self::draw_about(app, context),
         }
+
+        // remove later
+        Ok(())
     }
 
     //================================================================
@@ -188,6 +193,7 @@ impl Window {
     // queue layout.
     //================================================================
 
+    #[rustfmt::skip]
     fn draw_queue(app: &mut App, context: &egui::Context) {
         Self::draw_panel_layout(app, context);
         Self::draw_panel_status(app, context);
@@ -202,59 +208,32 @@ impl Window {
                 .column(Column::remainder())
                 .column(Column::auto())
                 .header(16.0, |mut header| {
-                    header.col(|ui| {
-                        ui.strong("Number");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Group");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Album");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Track");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Time");
-                    });
+                    header.col(|ui| { ui.strong("Number"); });
+                    header.col(|ui| { ui.strong("Group");  });
+                    header.col(|ui| { ui.strong("Album");  });
+                    header.col(|ui| { ui.strong("Track");  });
+                    header.col(|ui| { ui.strong("Time");   });
                 });
 
             table.body(|ui| {
                 ui.rows(16.0, app.window.queue.0.len(), |mut row| {
-                    let i = row.index();
-                    let queue = app.window.queue.0.get(i).unwrap();
+                    let index = row.index();
+                    let queue = app.window.queue.0.get(index).unwrap();
                     let group = app.library.list_group.get(queue.0).unwrap();
                     let album = group.list_album.get(queue.1).unwrap();
                     let track = album.list_track.get(queue.2).unwrap();
 
-                    row.set_selected(app.window.queue.1 == i);
+                    row.set_selected(index == app.window.queue.1);
 
-                    row.col(|ui| {
-                        ui.add(egui::Label::new((i + 1).to_string()).selectable(false));
-                    });
-
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(&group.name).selectable(false));
-                    });
-
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(&album.name).selectable(false));
-                    });
-
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(&track.name).selectable(false));
-                    });
-
-                    row.col(|ui| {
-                        ui.add(
-                            egui::Label::new(Self::format_time(track.time as usize))
-                                .selectable(false),
-                        );
-                    });
+                    row.col(|ui| { ui.add(egui::Label::new((index + 1).to_string()).selectable(false));                });
+                    row.col(|ui| { ui.add(egui::Label::new(&group.name).selectable(false));                            });
+                    row.col(|ui| { ui.add(egui::Label::new(&album.name).selectable(false));                            });
+                    row.col(|ui| { ui.add(egui::Label::new(&track.name).selectable(false));                            });
+                    row.col(|ui| { ui.add(egui::Label::new(Self::format_time(track.time as usize)).selectable(false)); });
 
                     if row.response().clicked() {
-                        app.window.queue.1 = i;
-                        app.track_add(*queue, context);
+                        app.window.queue.1 = index;
+                        let _ = app.track_add(*queue, context);
                     }
                 })
             });
@@ -270,9 +249,13 @@ impl Window {
 
         egui::CentralPanel::default().show(context, |ui| {
             ui.heading("Melodix (1.0.0)");
+            ui.separator();
+
             ui.label("Made by luxreduxdelux.");
+            ui.hyperlink_to("GitHub", "https://github.com/luxreduxdelux/melodix");
+
             ui.label("Additional help by:");
-            ui.label("* agus-balles");
+            ui.hyperlink_to("agus-balles", "https://github.com/agus-balles");
         });
     }
 
@@ -282,14 +265,22 @@ impl Window {
 
     fn draw_welcome(app: &mut App, context: &egui::Context) {
         egui::CentralPanel::default().show(context, |ui| {
-            ui.label("Welcome to Melodix!");
-            ui.separator();
-            if ui.button("Select Library Folder").clicked() {
-                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                    app.library = Library::scan(&folder.as_path().display().to_string());
-                    app.window.layout = Layout::Library;
+            ui.vertical_centered(|ui| {
+                ui.heading("Welcome to Melodix!");
+
+                ui.add(
+                    egui::Image::new(Self::IMAGE_LOGO).fit_to_exact_size(Vec2::new(128.0, 77.0)),
+                );
+
+                ui.separator();
+
+                if ui.button("Select Library Folder").clicked() {
+                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                        app.library = Library::scan(&folder.as_path().display().to_string());
+                        app.window.layout = Layout::Library;
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -356,34 +347,23 @@ impl Window {
 
                             let table: mlua::Table = script.1.get("setting").unwrap();
 
-                            for (key, value) in setting.iter_mut() {
+                            for (key, value) in setting.iter() {
                                 let table: mlua::Table = table.get(&**key).unwrap();
 
                                 match value {
-                                    /*
-                                    Widget::Label { name } => {
-                                        ui.label(name);
-                                    }
-                                    Widget::Button { name, call } => {
-                                        if ui.button(name).clicked() {
-                                            let call: mlua::Function =
-                                                script.1.get(&**call).unwrap();
-                                            call.call::<()>(()).unwrap();
-                                        }
-                                    }
-                                    */
                                     SettingData::String {
                                         data,
                                         name,
                                         info,
                                         call,
                                     } => {
+                                        let mut data: String = table.get("data").unwrap();
                                         let widget = ui.label(&*name).id;
                                         let widget =
-                                            ui.text_edit_singleline(data).labelled_by(widget);
+                                            ui.text_edit_singleline(&mut data).labelled_by(widget);
 
                                         if widget.on_hover_text(&*info).changed() {
-                                            table.set("data", &**data).unwrap();
+                                            table.set("data", data).unwrap();
 
                                             if let Some(call) = call {
                                                 let call: mlua::Function =
@@ -399,12 +379,14 @@ impl Window {
                                         bind,
                                         call,
                                     } => {
+                                        let mut data: f32 = table.get("data").unwrap();
                                         let widget = ui.add(
-                                            egui::Slider::new(data, bind.0..=bind.1).text(&*name),
+                                            egui::Slider::new(&mut data, bind.0..=bind.1)
+                                                .text(&*name),
                                         );
 
                                         if widget.on_hover_text(&*info).drag_stopped() {
-                                            table.set("data", *data).unwrap();
+                                            table.set("data", data).unwrap();
 
                                             if let Some(call) = call {
                                                 let call: mlua::Function =
@@ -419,10 +401,11 @@ impl Window {
                                         info,
                                         call,
                                     } => {
-                                        let widget = ui.checkbox(data, &*name);
+                                        let mut data: bool = table.get("data").unwrap();
+                                        let widget = ui.checkbox(&mut data, &*name);
 
                                         if widget.on_hover_text(&*info).clicked() {
-                                            table.set("data", *data).unwrap();
+                                            table.set("data", data).unwrap();
 
                                             if let Some(call) = call {
                                                 let call: mlua::Function =
@@ -455,7 +438,7 @@ impl Window {
 
     // draw the top track status bar. hidden if no track is available.
     fn draw_panel_status(app: &mut App, context: &egui::Context) {
-        if let Some(active) = app.window.active {
+        if let Some(active) = app.window.state {
             egui::TopBottomPanel::top("status").show(context, |ui| {
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.add_space(6.0);

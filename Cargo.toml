@@ -21,6 +21,7 @@ serde       = { version = "1.0",    features = ["derive"] }
 tokio       = { version = "1.45.1", features = ["full"] }
 # multi-thread library scan.
 rayon       = { version = "1.10" }
+anyhow = "1.0.98"
 
 #================================================================
 # audio play-back/meta-data.
@@ -48,3 +49,8 @@ souvlaki    = { version = "0.8.2" }
 rfd         = { version = "0.15.3" }
 # recursive folder scan.
 walkdir     = { version = "2" }
+
+[profile.release]
+opt-level     = 3
+codegen-units = 1
+lto           = "fat"
