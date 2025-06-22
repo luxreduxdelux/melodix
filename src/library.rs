@@ -50,13 +50,10 @@
 
 use rodio::Source;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fs::DirEntry;
 use std::io::BufReader;
+use std::path::Path;
 use std::time::UNIX_EPOCH;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
-use symphonia::core::errors::Error;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -67,9 +64,16 @@ use walkdir::WalkDir;
 
 use rayon::prelude::*;
 
+#[derive(Serialize, Deserialize)]
+pub enum Queue {
+    Path(String),
+    Index(usize, usize, usize),
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Library {
-    pub list_artist: Vec<Artist>,
+    pub list_group: Vec<Group>,
+    pub list_queue: Vec<Queue>,
 }
 
 impl Library {
@@ -86,54 +90,28 @@ impl Library {
     }
 
     pub fn scan(path: &str) -> Self {
-        let t = std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap();
-
         let path: Vec<walkdir::DirEntry> =
             WalkDir::new(path).into_iter().map(|x| x.unwrap()).collect();
 
-        println!(
-            "(hash) total: {:?}",
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                - t
-        );
+        let mut map_group: HashMap<String, Group> = HashMap::default();
 
-        let mut map_artist: HashMap<String, Artist> = HashMap::default();
-
-        // 5 s. on par_iter
-
-        let t = std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap();
-
-        let song_list: Vec<(Option<String>, Option<String>, Song)> = path
+        let track_list: Vec<(Option<String>, Option<String>, Track)> = path
             .par_iter()
-            .filter_map(|entry| Song::new(entry.path().to_str().unwrap()))
+            .filter_map(|entry| Track::new(entry.path().to_str().unwrap()))
             .collect();
 
-        println!(
-            "total: {:?}",
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                - t
-        );
-
-        for (artist, album, song) in song_list {
-            let artist = {
-                if let Some(artist) = artist {
-                    map_artist.entry(artist.clone()).or_insert(Artist {
-                        name: artist,
+        for (group, album, track) in track_list {
+            let group = {
+                if let Some(group) = group {
+                    map_group.entry(group.clone()).or_insert(Group {
+                        name: group,
                         list_album: vec![],
                     })
                 } else {
-                    map_artist
-                        .entry("< Unknown Artist >".to_string())
-                        .or_insert(Artist {
-                            name: "< Unknown Artist >".to_string(),
+                    map_group
+                        .entry("< Unknown Group >".to_string())
+                        .or_insert(Group {
+                            name: "< Unknown Group >".to_string(),
                             list_album: vec![],
                         })
                 }
@@ -141,18 +119,18 @@ impl Library {
 
             let album = album.unwrap_or("< Unknown Album >".to_string());
 
-            artist.insert_song(&album, song);
+            group.insert_track(&album, track);
         }
 
-        let mut list_artist: Vec<Artist> = map_artist.values().cloned().collect();
+        let mut list_group: Vec<Group> = map_group.values().cloned().collect();
 
-        list_artist.sort_by(|a, b| a.name.cmp(&b.name));
+        list_group.sort_by(|a, b| a.name.cmp(&b.name));
 
-        for artist in &mut list_artist {
-            artist.list_album.sort_by(|a, b| a.name.cmp(&b.name));
+        for group in &mut list_group {
+            group.list_album.sort_by(|a, b| a.name.cmp(&b.name));
 
-            for album in &mut artist.list_album {
-                album.list_song.sort_by(|a, b| {
+            for album in &mut group.list_album {
+                album.list_track.sort_by(|a, b| {
                     a.track
                         .unwrap_or_default()
                         .cmp(&b.track.unwrap_or_default())
@@ -160,7 +138,10 @@ impl Library {
             }
         }
 
-        let library = Self { list_artist };
+        let library = Self {
+            list_group,
+            list_queue: Vec::new(),
+        };
 
         let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
         std::fs::write("library.data", serialize).unwrap();
@@ -172,24 +153,48 @@ impl Library {
 //================================================================
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct Artist {
+pub struct Group {
     pub name: String,
     pub list_album: Vec<Album>,
 }
 
-impl Artist {
-    pub fn insert_song(&mut self, album: &str, song: Song) {
+impl Group {
+    fn get_image(path: &str) -> Option<String> {
+        let path = Path::new(path);
+        let path = path.parent().unwrap();
+
+        for path in std::fs::read_dir(path).unwrap() {
+            let path = path.unwrap().path().display().to_string();
+
+            if path.ends_with(".jpg") {
+                println!("Found {path}");
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
+    pub fn insert_track(&mut self, album: &str, track: Track) {
         for a in &mut self.list_album {
             if a.name == album {
-                a.list_song.push(song);
+                a.list_track.push(track);
                 return;
             }
         }
 
+        let icon = {
+            if track.icon.is_none() {
+                Self::get_image(&track.path)
+            } else {
+                None
+            }
+        };
+
         self.list_album.push(Album {
             name: album.to_string(),
-            icon: None,
-            list_song: vec![song],
+            icon,
+            list_track: vec![track],
         });
     }
 }
@@ -200,25 +205,24 @@ impl Artist {
 pub struct Album {
     pub name: String,
     pub icon: Option<String>,
-    pub list_song: Vec<Song>,
+    pub list_track: Vec<Track>,
 }
 
 //================================================================
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct Song {
+pub struct Track {
     pub name: String,
     pub path: String,
     pub time: u64,
     pub date: Option<String>,
     pub kind: Option<String>,
+    pub icon: Option<Vec<u8>>,
     pub track: Option<usize>,
 }
 
-use mp3_duration;
-
-impl Song {
-    pub fn new(path: &str) -> Option<(Option<String>, Option<String>, Song)> {
+impl Track {
+    pub fn new(path: &str) -> Option<(Option<String>, Option<String>, Track)> {
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
 
@@ -264,14 +268,15 @@ impl Song {
                 */
             };
 
-            let mut file_artist: Option<String> = None;
+            let mut file_group: Option<String> = None;
             let mut file_album: Option<String> = None;
-            let mut file_song = Song {
+            let mut file_track = Track {
                 name: path.to_string(),
                 path: path.to_string(),
                 date: None,
                 kind: None,
                 time,
+                icon: None,
                 track: None,
             };
 
@@ -280,30 +285,34 @@ impl Song {
                     if let Some(key) = tag.std_key {
                         match key {
                             symphonia::core::meta::StandardTagKey::Artist => {
-                                file_artist = Some(tag.value.to_string())
+                                file_group = Some(tag.value.to_string())
                             }
                             symphonia::core::meta::StandardTagKey::Album => {
                                 file_album = Some(tag.value.to_string())
                             }
                             symphonia::core::meta::StandardTagKey::Genre => {
-                                file_song.kind = Some(tag.value.to_string())
+                                file_track.kind = Some(tag.value.to_string())
                             }
                             symphonia::core::meta::StandardTagKey::Date => {
-                                file_song.date = Some(tag.value.to_string())
+                                file_track.date = Some(tag.value.to_string())
                             }
                             symphonia::core::meta::StandardTagKey::TrackTitle => {
-                                file_song.name = tag.value.to_string()
+                                file_track.name = tag.value.to_string()
                             }
                             symphonia::core::meta::StandardTagKey::TrackNumber => {
-                                file_song.track = Some(tag.value.to_string().parse().unwrap());
+                                file_track.track = Some(tag.value.to_string().parse().unwrap());
                             }
                             _ => {}
                         }
                     }
                 }
+
+                if let Some(visual) = revision.visuals().first() {
+                    file_track.icon = Some(visual.data.to_vec());
+                }
             }
 
-            return Some((file_artist, file_album, file_song));
+            return Some((file_group, file_album, file_track));
         }
 
         None

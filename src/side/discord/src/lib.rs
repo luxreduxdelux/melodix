@@ -162,7 +162,7 @@ impl Discord {
         time: u32,
     ) {
         let query = ReleaseSearchQuery::query_builder()
-            .artist(&group)
+            .group(&group)
             .and()
             .release(&album)
             .build();
