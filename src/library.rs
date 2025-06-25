@@ -48,12 +48,13 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use id3::{Error, Tag};
 use rodio::Source;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -204,7 +205,7 @@ pub struct Album {
 pub struct Track {
     pub name: String,
     pub path: String,
-    pub time: u64,
+    pub time: Duration,
     pub date: Option<String>,
     pub kind: Option<String>,
     pub icon: Option<Vec<u8>>,
@@ -235,27 +236,16 @@ impl Track {
                 if let Ok(src) = std::fs::File::open(path)
                     && let Ok(source) = rodio::Decoder::new(BufReader::new(src))
                 {
-                    let duration = source.total_duration().unwrap_or_default().as_secs();
-
-                    if duration == 0 {
-                        if let Ok(source) = mp3_duration::from_path(path) {
-                            source.as_secs()
-                        } else {
-                            0
-                        }
-                    } else {
+                    if let Some(duration) = source.total_duration() {
                         duration
+                    } else if let Ok(source) = mp3_duration::from_path(path) {
+                        source
+                    } else {
+                        Duration::default()
                     }
                 } else {
-                    0
+                    Duration::default()
                 }
-                /*
-                 if let Ok(source) = mp3_duration::from_path(path) {
-                    source.as_secs()
-                } else {
-                    0
-                }
-                */
             };
 
             let mut file_group: Option<String> = None;
@@ -306,5 +296,39 @@ impl Track {
         }
 
         None
+    }
+}
+
+//================================================================
+
+#[derive(Default, Debug, Clone)]
+pub struct EditorTrack {
+    pub path: String,
+    pub data: Tag,
+}
+
+impl EditorTrack {
+    pub fn new_from_path(path: &str) -> Vec<Self> {
+        let folder: Vec<String> = std::fs::read_dir(path)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.unwrap().path().to_str().unwrap().to_string())
+            .collect();
+        let mut folder: Vec<Self> = folder
+            .par_iter()
+            .filter_map(|entry| match Tag::read_from_path(&entry) {
+                Ok(tag) => Some(Self {
+                    path: entry.to_string(),
+                    data: tag,
+                }),
+                _ => Some(Self {
+                    path: entry.to_string(),
+                    data: Tag::new(),
+                }),
+            })
+            .collect();
+        folder.sort_by(|a, b| a.path.cmp(&b.path));
+
+        folder
     }
 }

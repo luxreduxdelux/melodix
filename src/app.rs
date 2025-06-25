@@ -178,11 +178,12 @@ impl App {
         if self.window.queue.1 > 0 {
             if let Some(track) = self.window.queue.0.get(self.window.queue.1 - 1) {
                 self.window.queue.1 -= 1;
-                self.track_add(*track, context)?
+                self.track_add(*track, context)?;
+                self.script.call(Script::CALL_SKIP_A, ());
+            } else {
+                self.track_stop();
             }
         }
-
-        self.script.call(Script::CALL_SKIP_A, ());
 
         Ok(())
     }
@@ -190,10 +191,11 @@ impl App {
     pub fn track_skip_b(&mut self, context: &egui::Context) -> anyhow::Result<()> {
         if let Some(track) = self.window.queue.0.get(self.window.queue.1 + 1) {
             self.window.queue.1 += 1;
-            self.track_add(*track, context)?
+            self.track_add(*track, context)?;
+            self.script.call(Script::CALL_SKIP_B, ());
+        } else {
+            self.track_stop();
         }
-
-        self.script.call(Script::CALL_SKIP_B, ());
 
         Ok(())
     }
@@ -209,11 +211,12 @@ impl App {
     pub fn new(context: &CreationContext) -> Self {
         let library = Library::new();
         let setting = Setting::new(context);
+        let window = Window::new(&library);
 
         Self {
-            script: Script::new(&library, &setting),
-            window: Window::new(&library),
+            script: Script::new(&library, &setting, &window),
             system: System::new(context),
+            window,
             library,
             setting,
         }

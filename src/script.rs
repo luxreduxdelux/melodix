@@ -48,15 +48,20 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use eframe::egui::{self, ImageSource, OpenUrl, Slider, Vec2};
+use egui_toast::Toasts;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::default;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 use crate::app::*;
 use crate::library::*;
 use crate::setting::*;
+use crate::window::*;
 
 use mlua::prelude::*;
 use serde::Deserialize;
@@ -65,27 +70,93 @@ use serde::Serialize;
 //================================================================
 
 #[derive(Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "kind")]
 pub enum SettingData {
-    String {
-        data: String,
+    Button {
         name: String,
         info: String,
         call: Option<String>,
     },
-    Number {
-        data: f32,
+    Toggle {
+        name: String,
+        info: String,
+        call: Option<String>,
+    },
+    Slider {
         name: String,
         info: String,
         bind: (f32, f32),
         call: Option<String>,
     },
-    Boolean {
-        data: bool,
+    Record {
         name: String,
         info: String,
         call: Option<String>,
     },
+}
+
+impl SettingData {
+    pub fn draw<M: IntoLuaMulti + Send + 'static>(
+        &self,
+        script: &mlua::Table,
+        table: &mlua::Table,
+        ui: &mut egui::Ui,
+        member: M,
+    ) {
+        match self {
+            SettingData::Button { name, info, call } => {
+                let widget = ui.button(name);
+
+                if widget.on_hover_text(info).clicked() {
+                    if let Some(call) = call {
+                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
+                    }
+                }
+            }
+            SettingData::Toggle { name, info, call } => {
+                let mut data: bool = table.get("data").unwrap();
+                let widget = ui.checkbox(&mut data, name);
+
+                if widget.on_hover_text(info).clicked() {
+                    table.set("data", data).unwrap();
+
+                    if let Some(call) = call {
+                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
+                    }
+                }
+            }
+            SettingData::Slider {
+                name,
+                info,
+                bind,
+                call,
+            } => {
+                let mut data: f32 = table.get("data").unwrap();
+                let widget = ui.add(egui::Slider::new(&mut data, bind.0..=bind.1).text(name));
+
+                if widget.on_hover_text(info).drag_stopped() {
+                    table.set("data", data).unwrap();
+
+                    if let Some(call) = call {
+                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
+                    }
+                }
+            }
+            SettingData::Record { name, info, call } => {
+                let mut data: String = table.get("data").unwrap();
+                let widget = ui.label(name).id;
+                let widget = ui.text_edit_singleline(&mut data).labelled_by(widget);
+
+                if widget.on_hover_text(info).changed() {
+                    table.set("data", data).unwrap();
+
+                    if let Some(call) = call {
+                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
+                    }
+                }
+            }
+        };
+    }
 }
 
 #[derive(Deserialize)]
@@ -95,6 +166,10 @@ pub struct Module {
     pub from: String,
     pub version: String,
     pub setting: Option<HashMap<String, SettingData>>,
+    pub album: Option<HashMap<String, SettingData>>,
+    pub group: Option<HashMap<String, SettingData>>,
+    pub track: Option<HashMap<String, SettingData>>,
+    pub queue: Option<HashMap<String, SettingData>>,
 }
 
 impl Module {
@@ -121,15 +196,17 @@ pub struct ScriptData {
     setting: Setting,
     state: Option<(usize, usize, usize)>,
     queue: (Vec<(usize, usize, usize)>, usize),
+    toast: Arc<Mutex<Toasts>>,
 }
 
 impl ScriptData {
-    fn set(lua: &Lua, library: &Library, setting: &Setting) -> mlua::Result<()> {
+    fn set(lua: &Lua, library: &Library, setting: &Setting, window: &Window) -> mlua::Result<()> {
         lua.set_app_data(Self {
             library: library.clone(),
             setting: setting.clone(),
             state: None,
             queue: (Vec::default(), 0),
+            toast: window.toast.clone(),
         });
 
         let melodix = lua.create_table()?;
@@ -138,6 +215,7 @@ impl ScriptData {
         melodix.set("get_setting", lua.create_function(Self::get_setting)?)?;
         melodix.set("get_state", lua.create_function(Self::get_state)?)?;
         melodix.set("get_queue", lua.create_function(Self::get_queue)?)?;
+        melodix.set("set_toast", lua.create_function(Self::set_toast)?)?;
 
         lua.globals().set("melodix", melodix)?;
 
@@ -184,6 +262,29 @@ impl ScriptData {
         }
     }
 
+    fn set_toast(lua: &Lua, (kind, text, time): (usize, String, f64)) -> mlua::Result<()> {
+        if let Some(data) = lua.app_data_ref::<Self>() {
+            if let Ok(mut lock) = data.toast.lock() {
+                lock.add(egui_toast::Toast {
+                    text: text.into(),
+                    kind: match kind {
+                        0 => egui_toast::ToastKind::Info,
+                        1 => egui_toast::ToastKind::Warning,
+                        2 => egui_toast::ToastKind::Error,
+                        _ => egui_toast::ToastKind::Success,
+                    },
+                    options: egui_toast::ToastOptions::default()
+                        .duration_in_seconds(time)
+                        .show_progress(true)
+                        .show_icon(true),
+                    ..Default::default()
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn set_library(app: &App) {
         if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
             data.library = app.library.clone();
@@ -221,7 +322,7 @@ impl Script {
     pub const CALL_SKIP_B: &'static str = "skip_b";
     pub const CALL_PAUSE: &'static str = "pause";
 
-    pub fn new(library: &Library, setting: &Setting) -> Self {
+    pub fn new(library: &Library, setting: &Setting, window: &Window) -> Self {
         let lua = unsafe { Lua::unsafe_new() };
         let mut script_list = Vec::new();
 
@@ -232,13 +333,26 @@ impl Script {
             }
         }
 
-        ScriptData::set(&lua, library, setting);
+        ScriptData::set(&lua, library, setting, window);
 
         let script = Self { lua, script_list };
 
         script.call(Self::CALL_BEGIN, ());
 
         script
+    }
+
+    // TO-DO rename to call, old call should be call_all
+    pub fn safe_call<M: IntoLuaMulti + Send + 'static>(
+        table: mlua::Table,
+        entry: mlua::Function,
+        member: M,
+    ) {
+        tokio::spawn(async move {
+            if let Err(error) = entry.call_async::<()>((table, member)).await {
+                App::error(&error.to_string());
+            }
+        });
     }
 
     pub fn call<M: IntoLuaMulti + Send + Clone + 'static>(&self, entry: &'static str, member: M) {
