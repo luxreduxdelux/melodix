@@ -48,16 +48,23 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
 use crate::app::*;
-use crate::library::Library;
+use crate::library::*;
 use crate::script::*;
 
 //================================================================
 
-use eframe::egui::{self, ImageSource, OpenUrl, Slider, Vec2};
+use eframe::egui::{self, ImageSource, Key, OpenUrl, Slider, Vec2};
 use eframe::egui::{Color32, TextureOptions};
 use egui_extras::{Column, TableBuilder};
+use egui_toast::{Toast, Toasts};
+use id3::TagLike;
 use mlua::prelude::*;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Deserialize;
 
 //================================================================
@@ -75,12 +82,16 @@ pub struct Window {
     ),
     pub state: Option<(usize, usize, usize)>,
     pub queue: (Vec<(usize, usize, usize)>, usize),
+    pub toast: Arc<Mutex<Toasts>>,
+    pub editor_select: Vec<bool>,
+    pub editor_active: Vec<EditorTrack>,
 }
 
 #[derive(PartialEq)]
 pub enum Layout {
     Welcome,
     Library,
+    Editor,
     Queue,
     Setup,
     About,
@@ -106,6 +117,8 @@ impl Window {
     //================================================================
 
     pub fn new(library: &Library) -> Self {
+        use egui::Align2;
+
         Self {
             layout: if library.list_group.is_empty() {
                 Layout::Welcome
@@ -123,6 +136,14 @@ impl Window {
             select: ((None, None), (None, None), (None, None)),
             state: None,
             queue: (Vec::default(), 0),
+            toast: Arc::new(Mutex::new(
+                Toasts::new()
+                    .anchor(Align2::RIGHT_BOTTOM, (-8.0, -8.0))
+                    .direction(egui::Direction::BottomUp),
+            )),
+            // TO-DO move this into its own struct
+            editor_select: Vec::default(),
+            editor_active: Vec::default(),
         }
     }
 
@@ -140,9 +161,15 @@ impl Window {
             }
         }
 
+        if let Ok(mut toast) = app.window.toast.lock() {
+            toast.show(context);
+        }
+
         match app.window.layout {
             Layout::Welcome => Self::draw_welcome(app, context),
             Layout::Library => Self::draw_library(app, context),
+            //Layout::Network => Self::draw_library(app, context),
+            Layout::Editor => Self::draw_editor(app, context),
             Layout::Queue => Self::draw_queue(app, context),
             Layout::Setup => Self::draw_setup(app, context),
             Layout::About => Self::draw_about(app, context),
@@ -182,6 +209,7 @@ impl Window {
         egui::TopBottomPanel::top("layout").show(context, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut app.window.layout, Layout::Library, "Library");
+                ui.selectable_value(&mut app.window.layout, Layout::Editor, "Editor");
                 ui.selectable_value(&mut app.window.layout, Layout::Queue, "Queue");
                 ui.selectable_value(&mut app.window.layout, Layout::Setup, "Setup");
                 ui.selectable_value(&mut app.window.layout, Layout::About, "About");
@@ -215,6 +243,8 @@ impl Window {
                     header.col(|ui| { ui.strong("Time");   });
                 });
 
+            let mut detach = None;
+
             table.body(|ui| {
                 ui.rows(16.0, app.window.queue.0.len(), |mut row| {
                     let index = row.index();
@@ -229,7 +259,26 @@ impl Window {
                     row.col(|ui| { ui.add(egui::Label::new(&group.name).selectable(false));                            });
                     row.col(|ui| { ui.add(egui::Label::new(&album.name).selectable(false));                            });
                     row.col(|ui| { ui.add(egui::Label::new(&track.name).selectable(false));                            });
-                    row.col(|ui| { ui.add(egui::Label::new(Self::format_time(track.time as usize)).selectable(false)); });
+                    row.col(|ui| { ui.add(egui::Label::new(Self::format_time(track.time.as_secs() as usize)).selectable(false)); });
+
+                    row.response().context_menu(|ui| {
+                        if ui.button("Remove from queue").clicked() {
+                            detach = Some((index, index == app.window.queue.1));
+                            ui.close_menu();
+                        }
+
+                        for script in &mut app.script.script_list {
+                            if let Some(s_queue) = &mut script.0.queue {
+                                ui.collapsing(&script.0.name, |ui| {
+                                    let table: mlua::Table = script.1.get("queue").unwrap();
+
+                                    for (key, value) in s_queue.iter() {
+                                        value.draw(&script.1, &table.get(&**key).unwrap(), ui, (queue.0, queue.1, queue.2));
+                                    }
+                                });
+                            }
+                        }
+                    });
 
                     if row.response().clicked() {
                         app.window.queue.1 = index;
@@ -237,6 +286,130 @@ impl Window {
                     }
                 })
             });
+
+            if let Some(detach) = detach {
+                if detach.1 {
+                    app.track_skip_b(context);
+                }
+
+                // TO-DO handle queue management in a better way...
+                app.window.queue.0.remove(detach.0);
+            }
+        });
+    }
+
+    //================================================================
+    // editor layout.
+    //================================================================
+
+    #[rustfmt::skip]
+    fn draw_editor(app: &mut App, context: &egui::Context) {
+        Self::draw_panel_layout(app, context);
+
+        egui::TopBottomPanel::top("editor_panel_top").show(context, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    app.window.editor_active.par_iter().for_each(|track| {
+                        println!("wrote {}", track.path);
+                        track.data.write_to_path(&track.path, track.data.version()).unwrap();
+                    });
+                }
+
+                if ui.button("Load").clicked() {
+                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                        let folder = EditorTrack::new_from_path(folder.as_path().to_str().unwrap());
+                        app.window.editor_select = [false].repeat(folder.len());
+                        app.window.editor_active = folder;
+                    }
+                }
+            });
+        });
+
+        egui::SidePanel::right("editor_panel_side").min_width(320.0).show(context, |ui| {
+            let mut edit_group = String::new();
+            let mut edit_album = String::new();
+            let mut edit_track = String::new();
+            let mut edit_order = 0;
+
+            for (i, select) in app.window.editor_select.iter().enumerate() {
+                if *select {
+                    let track = app.window.editor_active.get(i).unwrap();
+                    if let Some(group) = track.data.artist() { edit_group = group.to_string() };
+                    if let Some(album) = track.data.album()  { edit_album = album.to_string() };
+                    if let Some(track) = track.data.title()  { edit_track = track.to_string() };
+                    break;
+                }
+            }
+
+            let edit_field = |ui: &mut egui::Ui, app: &mut App, label: &str, field: &mut String, call: fn(&mut EditorTrack, &str)| {
+                ui.label(label);
+                if ui.text_edit_singleline(field).changed() {
+                    for (i, active) in app.window.editor_select.iter().enumerate() {
+                        if *active {
+                            let track = app.window.editor_active.get_mut(i).unwrap();
+                            call(track, field);
+                        }
+                    }
+                };
+            };
+
+            edit_field(ui, app, "Group", &mut edit_group, |track, field| track.data.set_artist(field));
+            edit_field(ui, app, "Album", &mut edit_album, |track, field| track.data.set_album(field));
+            edit_field(ui, app, "Track", &mut edit_track, |track, field| track.data.set_title(field));
+        });
+
+        egui::CentralPanel::default().show(context, |ui| {
+            let table = TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::remainder())
+                .header(16.0, |mut header| {
+                    header.col(|ui| { ui.strong("Path"); });
+                });
+
+            let mut space = false;
+            let mut reset = None;
+
+            table.body(|ui| {
+                ui.rows(16.0, app.window.editor_active.len(), |mut row| {
+                    let index = row.index();
+                    let track = app.window.editor_active.get_mut(index).unwrap();
+                    let state = app.window.editor_select.get_mut(index).unwrap();
+                    let path : Vec<&str>  = track.path.split("/").collect();
+                    let path = path.last().unwrap_or(&"");
+
+                    row.set_selected(*state);
+
+                    row.col(|ui| { ui.add(egui::Label::new(*path).selectable(false)); });
+
+                    if context.input(|i| i.modifiers.ctrl && i.key_pressed(Key::A)) {
+                        space = true;
+                    }
+
+                    if row.response().clicked() {
+                        if context.input(|i| i.modifiers.shift) {
+                            *state = !*state;
+                        } else {
+                            *state = !*state;
+                            reset = Some(index);
+                        }
+                    }
+                })
+            });
+
+            if space {
+                for select in &mut app.window.editor_select {
+                    *select = !*select;
+                }
+            }
+
+            if let Some(reset) = reset {
+                for (i, select) in app.window.editor_select.iter_mut().enumerate() {
+                    if i != reset {
+                        *select = false;
+                    }
+                }
+            }
         });
     }
 
@@ -349,72 +522,7 @@ impl Window {
 
                             for (key, value) in setting.iter() {
                                 let table: mlua::Table = table.get(&**key).unwrap();
-
-                                match value {
-                                    SettingData::String {
-                                        data,
-                                        name,
-                                        info,
-                                        call,
-                                    } => {
-                                        let mut data: String = table.get("data").unwrap();
-                                        let widget = ui.label(&*name).id;
-                                        let widget =
-                                            ui.text_edit_singleline(&mut data).labelled_by(widget);
-
-                                        if widget.on_hover_text(&*info).changed() {
-                                            table.set("data", data).unwrap();
-
-                                            if let Some(call) = call {
-                                                let call: mlua::Function =
-                                                    script.1.get(&**call).unwrap();
-                                                call.call::<()>(&script.1).unwrap();
-                                            }
-                                        }
-                                    }
-                                    SettingData::Number {
-                                        data,
-                                        name,
-                                        info,
-                                        bind,
-                                        call,
-                                    } => {
-                                        let mut data: f32 = table.get("data").unwrap();
-                                        let widget = ui.add(
-                                            egui::Slider::new(&mut data, bind.0..=bind.1)
-                                                .text(&*name),
-                                        );
-
-                                        if widget.on_hover_text(&*info).drag_stopped() {
-                                            table.set("data", data).unwrap();
-
-                                            if let Some(call) = call {
-                                                let call: mlua::Function =
-                                                    script.1.get(&**call).unwrap();
-                                                call.call::<()>(&script.1).unwrap();
-                                            }
-                                        }
-                                    }
-                                    SettingData::Boolean {
-                                        data,
-                                        name,
-                                        info,
-                                        call,
-                                    } => {
-                                        let mut data: bool = table.get("data").unwrap();
-                                        let widget = ui.checkbox(&mut data, &*name);
-
-                                        if widget.on_hover_text(&*info).clicked() {
-                                            table.set("data", data).unwrap();
-
-                                            if let Some(call) = call {
-                                                let call: mlua::Function =
-                                                    script.1.get(&**call).unwrap();
-                                                call.call::<()>(&script.1).unwrap();
-                                            }
-                                        }
-                                    }
-                                };
+                                value.draw(&script.1, &table, ui, ());
                             }
                         });
                     }
@@ -522,7 +630,7 @@ impl Window {
 
                         let play_time =
                             Self::format_time(app.system.sink.get_pos().as_secs() as usize);
-                        let track_time = Self::format_time(track.time as usize);
+                        let track_time = Self::format_time(track.time.as_secs() as usize);
 
                         ui.label(format!("{play_time}/{track_time}"));
 
@@ -530,7 +638,7 @@ impl Window {
 
                         if ui
                             .add(
-                                Slider::new(&mut seek, 0..=track.time)
+                                Slider::new(&mut seek, 0..=track.time.as_secs())
                                     .trailing_fill(true)
                                     .show_value(false),
                             )
@@ -586,6 +694,55 @@ impl Window {
         }
     }
 
+    fn queue_reset(app: &mut App) {
+        app.window.queue.0.clear();
+        app.window.queue.1 = 0;
+    }
+
+    fn queue_play_group(app: &mut App, i_group: usize, context: &egui::Context) {
+        Self::queue_reset(app);
+        let group = app.library.list_group.get(i_group).unwrap();
+
+        for (i_album, album) in group.list_album.iter().enumerate() {
+            for (i_track, track) in album.list_track.iter().enumerate() {
+                app.window.queue.0.push((i_group, i_album, i_track));
+            }
+        }
+
+        app.track_add((i_group, 0, 0), context);
+    }
+
+    fn queue_play_album(app: &mut App, group: usize, album: usize, context: &egui::Context) {
+        Self::queue_reset(app);
+        let i_group = app.library.list_group.get(group).unwrap();
+        let i_album = i_group.list_album.get(album).unwrap();
+
+        for x in 0..i_album.list_track.len() {
+            app.window.queue.0.push((group, album, x));
+        }
+
+        app.track_add((group, album, 0), context);
+    }
+
+    fn queue_play_track(
+        app: &mut App,
+        group: usize,
+        album: usize,
+        track: usize,
+        context: &egui::Context,
+    ) {
+        Self::queue_reset(app);
+        let i_group = app.library.list_group.get(group).unwrap();
+        let i_album = i_group.list_album.get(album).unwrap();
+
+        for x in track..i_album.list_track.len() {
+            app.window.queue.0.push((group, album, x));
+        }
+
+        app.track_add((group, album, track), context);
+    }
+
+    #[rustfmt::skip]
     fn draw_panel_group(app: &mut App, context: &egui::Context) {
         let rect = context.available_rect();
 
@@ -594,6 +751,7 @@ impl Window {
             .exact_width(rect.max.x / 2.0)
             .show(context, |ui| {
                 let mut sort = false;
+                let mut click = None;
 
                 ui.add_space(6.0);
 
@@ -644,9 +802,7 @@ impl Window {
                         let index = app.window.filter.0.get(i).unwrap();
                         let group = app.library.list_group.get(*index).unwrap();
 
-                        row.col(|ui| {
-                            ui.add(egui::Label::new(&group.name).selectable(false));
-                        });
+                        row.col(|ui| { ui.add(egui::Label::new(&group.name).selectable(false)); });
 
                         if row.response().clicked() {
                             app.window.select.0 = (Some(*index), Some(i));
@@ -654,11 +810,21 @@ impl Window {
                             app.window.select.2 = (None, None);
                             app.window.filter.1 = (0..group.list_album.len()).collect();
                         }
+
+                        if row.response().double_clicked() {
+                            click = Some((
+                                app.window.select.0.0.unwrap(),
+                            ));
+                        }
                     });
                 });
 
                 if sort {
                     app.window.filter.0.reverse();
+                }
+
+                if let Some(click) = click {
+                    Self::queue_play_group(app, click.0, context);
                 }
             });
     }
@@ -734,7 +900,10 @@ impl Window {
                             }
 
                             if row.response().double_clicked() {
-                                click = Some(app.window.filter.1.get(i).cloned().unwrap());
+                                click = Some((
+                                    app.window.select.0.0.unwrap(),
+                                    app.window.select.1.0.unwrap(),
+                                ));
                             }
                         });
                     });
@@ -744,25 +913,7 @@ impl Window {
                     }
 
                     if let Some(click) = click {
-                        let i_group = app.window.select.0.0.unwrap();
-                        let i_album = app.window.select.1.0.unwrap();
-                        let album = group.list_album.get(click).unwrap();
-                        app.window.select.2.0 = Some(0);
-                        app.window.queue.0.clear();
-                        app.window.queue.1 = 0;
-
-                        for x in 0..album.list_track.len() {
-                            app.window.queue.0.push((i_group, i_album, x));
-                        }
-
-                        app.track_add(
-                            (
-                                app.window.select.0.0.unwrap(),
-                                app.window.select.1.0.unwrap(),
-                                0,
-                            ),
-                            context,
-                        );
+                        Self::queue_play_album(app, click.0, click.1, context);
                     }
                 }
             });
@@ -771,13 +922,12 @@ impl Window {
     fn draw_panel_track(app: &mut App, context: &egui::Context) {
         let rect = context.available_rect();
 
-        let mut click = false;
-
         egui::TopBottomPanel::bottom("panel_track")
             .resizable(false)
             .exact_height(rect.max.y / 2.0)
             .show(context, |ui| {
                 let mut right = false;
+                let mut click = None;
 
                 if let Some(group) = app.window.select.0.0
                     && let Some(album) = app.window.select.1.0
@@ -880,37 +1030,31 @@ impl Window {
 
                             row.col(|ui| {
                                 ui.add(
-                                    egui::Label::new(Self::format_time(track.time as usize))
-                                        .selectable(false),
+                                    egui::Label::new(Self::format_time(
+                                        track.time.as_secs() as usize
+                                    ))
+                                    .selectable(false),
                                 );
                             });
 
                             if row.response().clicked() {
                                 app.window.select.2 = (Some(*index), Some(i));
-                                click = true;
+                                click = Some(*index);
                             }
                         });
                     });
+
+                    if let Some(click) = click {
+                        Self::queue_play_track(
+                            app,
+                            app.window.select.0.0.unwrap(),
+                            app.window.select.1.0.unwrap(),
+                            click,
+                            context,
+                        );
+                    }
                 }
             });
-
-        if click {
-            app.window.queue.0.clear();
-            app.window.queue.0.push((
-                app.window.select.0.0.unwrap(),
-                app.window.select.1.0.unwrap(),
-                app.window.select.2.0.unwrap(),
-            ));
-            app.window.queue.1 = 0;
-            app.track_add(
-                (
-                    app.window.select.0.0.unwrap(),
-                    app.window.select.1.0.unwrap(),
-                    app.window.select.2.0.unwrap(),
-                ),
-                context,
-            );
-        }
     }
 
     //================================================================

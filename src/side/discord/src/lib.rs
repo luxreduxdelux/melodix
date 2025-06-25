@@ -221,8 +221,7 @@ impl mlua::UserData for Discord {
             "state_play",
             |_, this, (group, album, track, time_a, time_b): (String, String, String, u32, u32)| {
                 if !*this.connect.lock().unwrap() {
-                    println!("Could not set Discord status.");
-                    return Ok(());
+                    return Ok(false);
                 }
 
                 //================================================================
@@ -243,7 +242,7 @@ impl mlua::UserData for Discord {
                         time_a,
                         time_b,
                     );
-                    return Ok(());
+                    return Ok(true);
                 }
 
                 //================================================================
@@ -265,7 +264,7 @@ impl mlua::UserData for Discord {
                                 time_a,
                                 time_b,
                             );
-                            return Ok(());
+                            return Ok(true);
                         }
                         // image could not be found in a previous instance, set state with no image.
                         CacheEntry::Null => {
@@ -278,7 +277,7 @@ impl mlua::UserData for Discord {
                                 time_a,
                                 time_b,
                             );
-                            return Ok(());
+                            return Ok(true);
                         }
                     }
                 }
@@ -307,13 +306,17 @@ impl mlua::UserData for Discord {
                     );
                 });
 
-                Ok(())
+                Ok(true)
             },
         );
 
         methods.add_method_mut("state_stop", |_, this, _: ()| {
+            if !*this.connect.lock().unwrap() {
+                return Ok(false);
+            }
+
             Self::clear_state(this.status_client.clone());
-            Ok(())
+            Ok(true)
         });
 
         methods.add_method_mut("get_cover_art", |_, this, _: ()| {
