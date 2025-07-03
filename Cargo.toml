@@ -3,13 +3,17 @@ name    = "melodix"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[profile.release]
+opt-level     = 3
+codegen-units = 1
+lto           = "fat"
 
+[dependencies]
 #================================================================
 # core.
 #================================================================
 # lua.
-mlua        = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize", "async"] }
+mlua        = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize"] }
 # egui.
 eframe      = { version = "0.31.1"                               }
 egui-toast  = { version = "0.17.0"                               }
@@ -18,17 +22,14 @@ image       = { version = "0.25.6", features = ["jpeg", "png"]   }
 # serialization/deserialization.
 postcard    = { version = "1.0.0",  features = ["alloc"]  }
 serde       = { version = "1.0",    features = ["derive"] }
-# async run-time.
-tokio       = { version = "1.45.1", features = ["full"] }
 # multi-thread library scan.
 rayon       = { version = "1.10" }
-anyhow = "1.0.98"
-id3 = "1.16.3"
+# generic error converter.
+anyhow      = { version = "1.0.98" }
 
 #================================================================
 # audio play-back/meta-data.
 #================================================================
-
 # audio play-back.
 rodio        = { version = "0.20.1", features = ["flac", "minimp3", "vorbis", "wav"] , default-features = false }
 # MP3 duration, due to minimp3 never being able to retrieve it, and symphonia failing ocasionally to do so.
@@ -39,9 +40,8 @@ symphonia    = { version = "0.5.4",  features = ["all", "opt-simd"] }
 #================================================================
 # miscellaneous system utility.
 #================================================================
-
 # push notification.
-notify-rust = { version = "4.11.7" }
+notify-rust = { version = "4.11.7", features = ["images"] }
 # tray icon.
 tray-icon   = { version = "0.20.1" }
 gtk         = { version = "0.18.2" }
@@ -51,8 +51,3 @@ souvlaki    = { version = "0.8.2" }
 rfd         = { version = "0.15.3" }
 # recursive folder scan.
 walkdir     = { version = "2" }
-
-[profile.release]
-opt-level     = 3
-codegen-units = 1
-lto           = "fat"
