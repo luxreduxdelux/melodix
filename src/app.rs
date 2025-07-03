@@ -80,6 +80,14 @@ impl App {
         })
     }
 
+    pub fn get_state(&self, index: (usize, usize, usize)) -> (&Group, &Album, &Track) {
+        let group = self.library.list_group.get(index.0).unwrap();
+        let album = group.list_album.get(index.1).unwrap();
+        let track = album.list_track.get(index.2).unwrap();
+
+        (group, album, track)
+    }
+
     pub fn get_play_state(&self) -> (&Group, &Album, &Track) {
         let group = self
             .library

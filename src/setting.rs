@@ -98,8 +98,6 @@ impl Default for Setting {
 
 impl Drop for Setting {
     fn drop(&mut self) {
-        println!("DROP push: {}", self.window_push);
-
         let serialize: Vec<u8> = postcard::to_allocvec(&self).unwrap();
         std::fs::write("setting.data", serialize).unwrap();
     }

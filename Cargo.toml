@@ -51,3 +51,5 @@ souvlaki    = { version = "0.8.2" }
 rfd         = { version = "0.15.3" }
 # recursive folder scan.
 walkdir     = { version = "2" }
+rand = "0.9.1"
+m3u = "1.0.0"

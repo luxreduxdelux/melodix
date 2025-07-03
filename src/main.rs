@@ -67,7 +67,9 @@ fn main() -> eframe::Result {
 
     // set window data.
     let configuration = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(std::sync::Arc::new(i)),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size((1280.0, 720.0))
+            .with_icon(std::sync::Arc::new(i)),
         centered: true,
         ..Default::default()
     };

@@ -48,6 +48,8 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use std::path::PathBuf;
+
 use crate::{app::*, library::*};
 
 //================================================================
@@ -55,6 +57,7 @@ use crate::{app::*, library::*};
 use eframe::egui::{self, Color32, Slider, TextureOptions, Vec2};
 use egui_extras::{Column, TableBuilder};
 use egui_toast::Toasts;
+use rand::seq::{IndexedRandom, SliceRandom};
 
 //================================================================
 
@@ -130,6 +133,17 @@ impl Window {
         {
             if app.window.replay {
                 app.track_add(active, context)?;
+            } else if app.window.random {
+                if app.window.queue.0.len() > 1 {
+                    let mut random: Vec<usize> = (0..app.window.queue.0.len()).collect();
+                    let mut picker = rand::rng();
+                    random.shuffle(&mut picker);
+
+                    let track = random.choose(&mut picker).unwrap();
+
+                    app.window.queue.1 = *track;
+                    app.track_add(*app.window.queue.0.get(*track).unwrap(), context)?;
+                }
             } else if let Some(track) = app.window.queue.0.get(app.window.queue.1 + 1) {
                 app.window.queue.1 += 1;
                 app.track_add(*track, context)?;
@@ -197,6 +211,58 @@ impl Window {
         Self::draw_panel_status(app, context);
 
         egui::CentralPanel::default().show(context, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Save Queue").clicked() {
+                    if let Some(file) = rfd::FileDialog::new().set_file_name("queue.m3u").add_filter("m3u", &["m3u"]).save_file() {
+                        let mut file = std::fs::File::create(file).unwrap();
+                        let mut writer = m3u::Writer::new(&mut file);
+
+                        for entry in &app.window.queue.0 {
+                            let (_, _, track) = app.get_state(*entry);
+                            writer.write_entry(&m3u::Entry::Path(track.path.clone().into())).unwrap();
+                        }
+                    }
+                }
+                if ui.button("Load Queue").clicked() {
+                    if let Some(file) = rfd::FileDialog::new().add_filter("m3u", &["m3u"]).pick_file() {
+                        let mut reader = m3u::Reader::open(file).unwrap();
+                        let read_playlist: Vec<_> = reader.entries().map(|entry| entry.unwrap()).collect();
+
+                        Self::queue_reset(app);
+
+                        for entry in read_playlist {
+                            match entry {
+                                m3u::Entry::Path(path) => {
+                                    let mut play = Vec::new();
+
+                                    for (i_group, group) in app.library.list_group.iter().enumerate() {
+                                        for (i_album, album) in group.list_album.iter().enumerate() {
+                                            for (i_track, track) in album.list_track.iter().enumerate() {
+                                                if track.path == path.display().to_string() {
+                                                    play.push((i_group, i_album, i_track));
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    for (i_g, i_a, i_t) in play {
+                                        app.window.queue.0.push((i_g, i_a, i_t));
+                                        app.window.queue.1 = 0;
+                                    }
+
+                                    if let Some(first) = app.window.queue.0.first() {
+                                        app.track_add(*first, context);
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            });
+
+            ui.separator();
+
             let table = TableBuilder::new(ui)
                 .striped(true)
                 .sense(egui::Sense::click())
@@ -204,7 +270,7 @@ impl Window {
                 .column(Column::remainder())
                 .column(Column::remainder())
                 .column(Column::remainder())
-                .column(Column::auto())
+                .column(Column::remainder())
                 .header(16.0, |mut header| {
                     header.col(|ui| { ui.strong("Number"); });
                     header.col(|ui| { ui.strong("Group");  });
@@ -321,17 +387,11 @@ impl Window {
         Self::draw_panel_layout(app, context);
 
         egui::CentralPanel::default().show(context, |ui| {
-            ui.heading("Melodix Configuration");
-
-
             if ui.button("Scan Folder").clicked() {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                     app.library = Library::scan(&folder.as_path().display().to_string());
                     app.window.layout = Layout::Library;
                 }
-            }
-            if ui.button("Refresh Library").clicked() {
-                app.library.refresh();
             }
 
             if ui.add(egui::Slider::new(&mut app.setting.window_scale, 1.0..=2.0).text("Window scale factor")).drag_stopped() {
@@ -540,6 +600,7 @@ impl Window {
     fn queue_reset(app: &mut App) {
         app.window.queue.0.clear();
         app.window.queue.1 = 0;
+        app.track_stop();
     }
 
     fn queue_play_group(
