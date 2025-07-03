@@ -48,22 +48,14 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use crate::library::*;
-use crate::script::*;
-use crate::setting::*;
-use crate::system::*;
-use crate::window::*;
+use crate::{library::*, script::*, setting::*, system::*, window::*};
 
 //================================================================
 
-use eframe::CreationContext;
-use eframe::egui;
-use std::io::BufReader;
-use std::time::Duration;
+use eframe::{CreationContext, egui};
+use std::{io::BufReader, time::Duration};
 
 //================================================================
-
-// TO-DO minimize/hide window, tray icon, welcome menu, configuration menu, plug-in menu, plug-in setting data, add Group/Album/Track header
 
 pub struct App {
     pub library: Library,
@@ -74,7 +66,20 @@ pub struct App {
 }
 
 impl App {
-    // get the currently active group, album, and track.
+    pub fn new(context: &CreationContext) -> anyhow::Result<Self> {
+        let library = Library::new();
+        let setting = Setting::new(context);
+        let window = Window::new(&library);
+
+        Ok(Self {
+            script: Script::new(&setting)?,
+            system: System::new(&setting, context)?,
+            window,
+            library,
+            setting,
+        })
+    }
+
     pub fn get_play_state(&self) -> (&Group, &Album, &Track) {
         let group = self
             .library
@@ -98,25 +103,37 @@ impl App {
         track: (usize, usize, usize),
         context: &egui::Context,
     ) -> anyhow::Result<()> {
+        context.forget_all_images();
+
+        // set active window track state.
         self.window.state = Some((track.0, track.1, track.2));
+        // get group, album, track data from window state.
+        let (group, album, track) = self.get_play_state();
 
-        let (_, _, track) = self.get_play_state();
+        let file = rodio::Decoder::new(BufReader::new(std::fs::File::open(&track.path)?))?;
 
-        let file = std::fs::File::open(&track.path)?;
-        let file = rodio::Decoder::new(BufReader::new(file))?;
+        // send push notification.
+        self.system
+            .push_notification(context, (group, album, track))?;
 
-        let state = self.window.state.unwrap();
-        self.window.state = Some((state.0, state.1, state.2));
-
+        // kill the current track, add new track.
         self.system.sink.stop();
         self.system.sink.append(file);
+
+        // append call-back for when the track is over.
+        let clone = context.clone();
+        self.system
+            .sink
+            .append(rodio::source::EmptyCallback::<f32>::new(Box::new(
+                move || {
+                    clone.request_repaint();
+                },
+            )));
+
         self.system.sink.play();
 
-        ScriptData::set_state(self);
-        ScriptData::set_queue(self);
-
-        self.script
-            .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
+        //self.script
+        //    .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
 
         Ok(())
     }
@@ -208,17 +225,13 @@ impl App {
             .show();
     }
 
-    pub fn new(context: &CreationContext) -> Self {
-        let library = Library::new();
-        let setting = Setting::new(context);
-        let window = Window::new(&library);
-
-        Self {
-            script: Script::new(&library, &setting, &window),
-            system: System::new(context),
-            window,
-            library,
-            setting,
+    pub fn error_result(result: anyhow::Result<()>) {
+        if let Err(error) = result {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Error")
+                .set_description(error.to_string())
+                .show();
         }
     }
 }

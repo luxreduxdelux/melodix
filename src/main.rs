@@ -58,29 +58,11 @@ mod window;
 //================================================================
 
 use crate::app::*;
-use eframe::egui::{self, IconData};
-use std::time::Duration;
-use tokio::runtime::Runtime;
+use eframe::egui;
 
 //================================================================
 
 fn main() -> eframe::Result {
-    // TO-DO get setting data here.
-    let rt = Runtime::new().expect("Unable to create Runtime");
-
-    // Enter the runtime so that `tokio::spawn` is available immediately.
-    let _enter = rt.enter();
-
-    // Execute the runtime in its own thread.
-    // The future doesn't have to do anything. In this example, it just sleeps forever.
-    std::thread::spawn(move || {
-        rt.block_on(async {
-            loop {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-            }
-        })
-    });
-
     let i = eframe::icon_data::from_png_bytes(include_bytes!("../data/icon.png")).unwrap();
 
     // set window data.
@@ -96,7 +78,7 @@ fn main() -> eframe::Result {
         configuration,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(App::new(cc)))
+            Ok(Box::new(App::new(cc)?))
         }),
     )
 }

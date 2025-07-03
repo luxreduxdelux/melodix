@@ -48,24 +48,14 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use eframe::egui::{self, ImageSource, OpenUrl, Slider, Vec2};
-use egui_toast::Toasts;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::default;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Duration;
+use crate::{app::*, library::*, setting::*, window::*};
 
-use crate::app::*;
-use crate::library::*;
-use crate::setting::*;
-use crate::window::*;
+//================================================================
 
+use eframe::egui::{self};
 use mlua::prelude::*;
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 //================================================================
 
@@ -186,127 +176,14 @@ impl Module {
 }
 
 pub struct Script {
+    #[allow(dead_code)]
     pub lua: Lua,
     pub script_list: Vec<(Module, mlua::Table)>,
 }
 
-#[derive(Default)]
-pub struct ScriptData {
-    library: Library,
-    setting: Setting,
-    state: Option<(usize, usize, usize)>,
-    queue: (Vec<(usize, usize, usize)>, usize),
-    toast: Arc<Mutex<Toasts>>,
-}
-
-impl ScriptData {
-    fn set(lua: &Lua, library: &Library, setting: &Setting, window: &Window) -> mlua::Result<()> {
-        lua.set_app_data(Self {
-            library: library.clone(),
-            setting: setting.clone(),
-            state: None,
-            queue: (Vec::default(), 0),
-            toast: window.toast.clone(),
-        });
-
-        let melodix = lua.create_table()?;
-
-        melodix.set("get_library", lua.create_function(Self::get_library)?)?;
-        melodix.set("get_setting", lua.create_function(Self::get_setting)?)?;
-        melodix.set("get_state", lua.create_function(Self::get_state)?)?;
-        melodix.set("get_queue", lua.create_function(Self::get_queue)?)?;
-        melodix.set("set_toast", lua.create_function(Self::set_toast)?)?;
-
-        lua.globals().set("melodix", melodix)?;
-
-        Ok(())
-    }
-
-    fn get_library(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
-        if let Some(data) = lua.app_data_ref::<Self>() {
-            lua.to_value(&data.library)
-        } else {
-            Err(mlua::Error::runtime(
-                "get_library(): Could not get library data.",
-            ))
-        }
-    }
-
-    fn get_setting(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
-        if let Some(data) = lua.app_data_ref::<Self>() {
-            lua.to_value(&data.setting)
-        } else {
-            Err(mlua::Error::runtime(
-                "get_setting(): Could not get setting data.",
-            ))
-        }
-    }
-
-    fn get_state(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
-        if let Some(data) = lua.app_data_ref::<Self>() {
-            lua.to_value(&data.state)
-        } else {
-            Err(mlua::Error::runtime(
-                "get_state(): Could not get state data.",
-            ))
-        }
-    }
-
-    fn get_queue(lua: &Lua, _: ()) -> mlua::Result<LuaValue> {
-        if let Some(data) = lua.app_data_ref::<Self>() {
-            lua.to_value(&data.queue)
-        } else {
-            Err(mlua::Error::runtime(
-                "get_queue(): Could not get queue data.",
-            ))
-        }
-    }
-
-    fn set_toast(lua: &Lua, (kind, text, time): (usize, String, f64)) -> mlua::Result<()> {
-        if let Some(data) = lua.app_data_ref::<Self>() {
-            if let Ok(mut lock) = data.toast.lock() {
-                lock.add(egui_toast::Toast {
-                    text: text.into(),
-                    kind: match kind {
-                        0 => egui_toast::ToastKind::Info,
-                        1 => egui_toast::ToastKind::Warning,
-                        2 => egui_toast::ToastKind::Error,
-                        _ => egui_toast::ToastKind::Success,
-                    },
-                    options: egui_toast::ToastOptions::default()
-                        .duration_in_seconds(time)
-                        .show_progress(true)
-                        .show_icon(true),
-                    ..Default::default()
-                });
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn set_library(app: &App) {
-        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
-            data.library = app.library.clone();
-        }
-    }
-
-    pub fn set_setting(app: &App) {
-        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
-            data.setting = app.setting.clone();
-        }
-    }
-
-    pub fn set_state(app: &App) {
-        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
-            data.state = app.window.state.clone();
-        }
-    }
-
-    pub fn set_queue(app: &App) {
-        if let Some(mut data) = app.script.lua.app_data_mut::<Self>() {
-            data.queue = app.window.queue.clone();
-        }
+impl Drop for Script {
+    fn drop(&mut self) {
+        self.call(Self::CALL_CLOSE, ());
     }
 }
 
@@ -314,7 +191,6 @@ impl Script {
     const PATH_SCRIPT: &'static str = "script/";
     pub const CALL_BEGIN: &'static str = "begin";
     pub const CALL_CLOSE: &'static str = "close";
-    pub const CALL_LOOP: &'static str = "loop";
     pub const CALL_SEEK: &'static str = "seek";
     pub const CALL_STOP: &'static str = "stop";
     pub const CALL_PLAY: &'static str = "play";
@@ -322,24 +198,24 @@ impl Script {
     pub const CALL_SKIP_B: &'static str = "skip_b";
     pub const CALL_PAUSE: &'static str = "pause";
 
-    pub fn new(library: &Library, setting: &Setting, window: &Window) -> Self {
+    pub fn new(setting: &Setting) -> anyhow::Result<Self> {
         let lua = unsafe { Lua::unsafe_new() };
         let mut script_list = Vec::new();
 
-        for file in std::fs::read_dir(Self::PATH_SCRIPT).unwrap() {
-            let file = file.unwrap().path().display().to_string();
-            if let Ok(module) = Module::new(&lua, &file) {
-                script_list.push(module);
+        if setting.script_allow {
+            for file in std::fs::read_dir(Self::PATH_SCRIPT)? {
+                let file = file?.path().display().to_string();
+                if let Ok(module) = Module::new(&lua, &file) {
+                    script_list.push(module);
+                }
             }
         }
-
-        ScriptData::set(&lua, library, setting, window);
 
         let script = Self { lua, script_list };
 
         script.call(Self::CALL_BEGIN, ());
 
-        script
+        Ok(script)
     }
 
     // TO-DO rename to call, old call should be call_all
@@ -348,11 +224,9 @@ impl Script {
         entry: mlua::Function,
         member: M,
     ) {
-        tokio::spawn(async move {
-            if let Err(error) = entry.call_async::<()>((table, member)).await {
-                App::error(&error.to_string());
-            }
-        });
+        if let Err(error) = entry.call::<()>((table, member)) {
+            App::error(&error.to_string());
+        }
     }
 
     pub fn call<M: IntoLuaMulti + Send + Clone + 'static>(&self, entry: &'static str, member: M) {
@@ -361,11 +235,9 @@ impl Script {
                 let table = script.1.clone();
                 let clone = member.clone();
 
-                tokio::spawn(async move {
-                    if let Err(error) = function.call_async::<()>((table, clone)).await {
-                        App::error(&error.to_string());
-                    }
-                });
+                if let Err(error) = function.call::<()>((table, clone)) {
+                    App::error(&error.to_string());
+                }
             }
         }
     }

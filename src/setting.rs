@@ -48,8 +48,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use eframe::CreationContext;
-use eframe::egui;
+use eframe::{CreationContext, egui};
 use serde::{Deserialize, Serialize};
 
 //================================================================
@@ -58,14 +57,10 @@ use serde::{Deserialize, Serialize};
 pub struct Setting {
     pub window_scale: f32,
     pub window_theme: bool,
-    pub window_style: bool,
     pub window_media: bool,
     pub window_tray: bool,
     pub window_push: bool,
-    pub library_path: String,
-    pub library_find: bool,
     pub script_allow: bool,
-    pub update_check: bool,
 }
 
 impl Setting {
@@ -78,8 +73,6 @@ impl Setting {
 
                 if setting.window_theme {
                     context.egui_ctx.set_theme(egui::Theme::Light);
-                } else {
-                    context.egui_ctx.set_theme(egui::Theme::Dark);
                 }
 
                 return setting;
@@ -95,20 +88,18 @@ impl Default for Setting {
         Self {
             window_scale: 1.0,
             window_theme: false,
-            window_style: false,
             window_media: true,
             window_tray: true,
             window_push: true,
-            library_path: String::default(),
-            library_find: false,
             script_allow: true,
-            update_check: true,
         }
     }
 }
 
 impl Drop for Setting {
     fn drop(&mut self) {
+        println!("DROP push: {}", self.window_push);
+
         let serialize: Vec<u8> = postcard::to_allocvec(&self).unwrap();
         std::fs::write("setting.data", serialize).unwrap();
     }

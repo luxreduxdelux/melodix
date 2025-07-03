@@ -48,40 +48,48 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use crate::app::*;
+use crate::{app::*, library::*, setting::*};
 
 //================================================================
 
-use eframe::CreationContext;
-use eframe::egui;
-use rodio::OutputStream;
-use rodio::OutputStreamHandle;
-use rodio::Sink;
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, PlatformConfig};
+use eframe::{CreationContext, egui};
+use notify_rust::{Image, Notification};
+use rodio::{OutputStream, OutputStreamHandle, Sink};
+use souvlaki::{MediaControlEvent, MediaControls, PlatformConfig};
 use std::sync::mpsc::{Receiver, Sender};
-use tray_icon::TrayIconBuilder;
-use tray_icon::TrayIconEvent;
-use tray_icon::menu::MenuEvent;
-use tray_icon::menu::MenuItemBuilder;
+use tray_icon::{
+    TrayIconBuilder,
+    menu::{MenuEvent, MenuItemBuilder},
+};
 
 //================================================================
 
+#[allow(dead_code)]
 pub struct System {
+    /// media sink, for audio play-back.
     pub sink: Sink,
+    /// multi-media key event handler.
+    pub media: Option<(MediaControls, Receiver<MediaControlEvent>)>,
+    /// push notification event handler.
+    push: Option<(Sender<String>, Receiver<String>)>,
+    /// media sink stream and handle.
     stream: OutputStream,
+    /// media sink stream and handle.
     handle: OutputStreamHandle,
-    pub media: MediaControls,
-    click_tx: Sender<String>,
-    click_rx: Receiver<String>,
-    event_rx: Receiver<MediaControlEvent>,
 }
 
 impl System {
     const TRAY_ICON: &[u8] = include_bytes!("../data/tray.png");
+    const TRAY_COMMAND_TOGGLE: &str = "1";
+    const TRAY_COMMAND_SKIP_A: &str = "2";
+    const TRAY_COMMAND_SKIP_B: &str = "3";
+    const TRAY_COMMAND_EXIT: &str = "4";
+    const PUSH_COMMAND_SKIP_A: &str = "skip_a";
+    const PUSH_COMMAND_SKIP_B: &str = "skip_b";
 
-    pub fn new(cc: &CreationContext) -> Self {
-        let (stream, handle) = rodio::OutputStream::try_default().unwrap();
-        let sink = rodio::Sink::try_new(&handle).unwrap();
+    pub fn new(setting: &Setting, context: &CreationContext) -> anyhow::Result<Self> {
+        let (stream, handle) = rodio::OutputStream::try_default()?;
+        let sink = rodio::Sink::try_new(&handle)?;
 
         let config = PlatformConfig {
             dbus_name: "melodix",
@@ -89,110 +97,123 @@ impl System {
             hwnd: None,
         };
 
-        let mut media = MediaControls::new(config).unwrap();
+        let media = {
+            if setting.window_media {
+                let mut media = MediaControls::new(config)?;
 
-        let (event_tx, event_rx) = std::sync::mpsc::channel();
-        let (click_tx, click_rx) = std::sync::mpsc::channel();
+                let clone = context.egui_ctx.clone();
+                let (event_tx, media_rx) = std::sync::mpsc::channel();
 
-        let clone = cc.egui_ctx.clone();
-        media
-            .attach(move |event: MediaControlEvent| {
-                clone.request_repaint();
-                event_tx.send(event).unwrap();
-            })
-            .unwrap();
+                media.attach(move |event: MediaControlEvent| {
+                    clone.request_repaint();
+                    event_tx
+                        .send(event)
+                        .expect("System::new(): Couldn't send media event.");
+                })?;
 
-        // Since egui uses winit under the hood and doesn't use gtk on Linux, and we need gtk for
-        // the tray icon to show up, we need to spawn a thread
-        // where we initialize gtk and create the tray_icon
-        #[cfg(target_os = "linux")]
-        std::thread::spawn(|| {
-            use tray_icon::menu::Menu;
+                Some((media, media_rx))
+            } else {
+                None
+            }
+        };
 
-            gtk::init().unwrap();
+        if setting.window_tray {
+            std::thread::spawn(|| {
+                gtk::init().expect("System::new(): Couldn't create GTK instance.");
 
-            let tray_menu = tray_icon::menu::Menu::with_items(&[
-                &MenuItemBuilder::new().text("Play").enabled(true).build(),
-                &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
-                &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
-                &MenuItemBuilder::new().text("Exit").enabled(true).build(),
-            ])
-            .unwrap();
+                let tray_menu = tray_icon::menu::Menu::with_items(&[
+                    &MenuItemBuilder::new().text("Play").enabled(true).build(),
+                    &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
+                    &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
+                    &MenuItemBuilder::new().text("Exit").enabled(true).build(),
+                ])
+                .expect("System::new(): Couldn't create tray menu.");
 
-            let image = image::load_from_memory(Self::TRAY_ICON)
-                .unwrap()
-                .into_bytes();
-            let tray_icon = TrayIconBuilder::new()
-                .with_menu(Box::new(tray_menu))
-                .with_icon(tray_icon::Icon::from_rgba(image, 32, 32).unwrap())
-                .build()
-                .unwrap();
+                let image = image::load_from_memory(Self::TRAY_ICON)
+                    .expect("System::new(): Couldn't load tray icon image.")
+                    .into_bytes();
+                let _tray = TrayIconBuilder::new()
+                    .with_menu(Box::new(tray_menu))
+                    .with_icon(
+                        tray_icon::Icon::from_rgba(image, 32, 32)
+                            .expect("System::new(): Couldn't use tray icon image."),
+                    )
+                    .build()
+                    .expect("System::new(): Couldn't create tray icon.");
 
-            gtk::main();
-        });
+                gtk::main();
+            });
+        }
 
-        Self {
+        let push = {
+            if setting.window_push {
+                Some(std::sync::mpsc::channel())
+            } else {
+                None
+            }
+        };
+
+        Ok(Self {
             sink,
             stream,
             handle,
             media,
-            click_tx,
-            click_rx,
-            event_rx,
-        }
+            push,
+        })
     }
 
     pub fn poll_event(&mut self) -> Option<MediaControlEvent> {
-        /*
-        TO-DO does not work on linux, though should support showing/hiding the window on any other OS
-        if let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            println!("tray event: {:?}", event);
+        // if multi-media key event handler is present, try reading event.
+        if let Some((_, media_rx)) = self.media.as_ref() {
+            if let Ok(event) = media_rx.try_recv() {
+                return Some(event);
+            }
         }
-        */
 
+        // if tray notification event handler is present, try reading event.
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id.0.as_str() {
-                "1" => return Some(MediaControlEvent::Toggle),
-                "2" => return Some(MediaControlEvent::Previous),
-                "3" => return Some(MediaControlEvent::Next),
-                "4" => return Some(MediaControlEvent::Quit),
+                Self::TRAY_COMMAND_TOGGLE => return Some(MediaControlEvent::Toggle),
+                Self::TRAY_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
+                Self::TRAY_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
+                Self::TRAY_COMMAND_EXIT => return Some(MediaControlEvent::Quit),
                 _ => return None,
             }
         }
 
-        if let Ok(click) = self.click_rx.try_recv() {
-            match click.as_str() {
-                "skip-a" => return Some(MediaControlEvent::Previous),
-                "skip-b" => return Some(MediaControlEvent::Next),
-                _ => return None,
+        // if push notification event handler is present, try reading event.
+        if let Some((_, push_rx)) = self.push.as_ref() {
+            if let Ok(click) = push_rx.try_recv() {
+                match click.as_str() {
+                    Self::PUSH_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
+                    Self::PUSH_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
+                    _ => return None,
+                }
             }
-        }
-
-        if let Ok(event) = self.event_rx.try_recv() {
-            return Some(event);
         }
 
         None
     }
 
+    #[rustfmt::skip]
     pub fn make_event(
         event: MediaControlEvent,
         app: &mut App,
         context: &egui::Context,
     ) -> anyhow::Result<()> {
         match event {
-            MediaControlEvent::Play => app.track_play(),
-            MediaControlEvent::Pause => app.track_pause(),
-            MediaControlEvent::Toggle => app.track_toggle(),
-            MediaControlEvent::Next => app.track_skip_b(context)?,
-            MediaControlEvent::Previous => app.track_skip_a(context)?,
-            MediaControlEvent::Stop => app.track_stop(),
+            MediaControlEvent::Play                 => app.track_play(),
+            MediaControlEvent::Pause                => app.track_pause(),
+            MediaControlEvent::Toggle               => app.track_toggle(),
+            MediaControlEvent::Next                 => app.track_skip_b(context)?,
+            MediaControlEvent::Previous             => app.track_skip_a(context)?,
+            MediaControlEvent::Stop                 => app.track_stop(),
             MediaControlEvent::Seek(seek_direction) => match seek_direction {
-                souvlaki::SeekDirection::Forward => app.track_seek(10, true),
+                souvlaki::SeekDirection::Forward  => app.track_seek( 10, true),
                 souvlaki::SeekDirection::Backward => app.track_seek(-10, true),
             },
             MediaControlEvent::SeekBy(seek_direction, duration) => match seek_direction {
-                souvlaki::SeekDirection::Forward => app.track_seek(duration.as_secs() as i64, true),
+                souvlaki::SeekDirection::Forward  => app.track_seek(duration.as_secs() as i64, true),
                 souvlaki::SeekDirection::Backward => {
                     app.track_seek(-(duration.as_secs() as i64), true)
                 }
@@ -201,9 +222,72 @@ impl System {
                 app.track_seek(media_position.0.as_secs() as i64, false)
             }
             MediaControlEvent::SetVolume(volume) => app.track_set_volume(volume as f32),
-            MediaControlEvent::OpenUri(_) => todo!(),
-            MediaControlEvent::Raise => context.send_viewport_cmd(egui::ViewportCommand::Focus),
-            MediaControlEvent::Quit => context.send_viewport_cmd(egui::ViewportCommand::Close),
+            MediaControlEvent::Raise             => context.send_viewport_cmd(egui::ViewportCommand::Focus),
+            MediaControlEvent::Quit              => context.send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    #[rustfmt::skip]
+    pub fn push_notification(&self, context: &egui::Context, state: (&Group, &Album, &Track)) -> anyhow::Result<()> {
+        // if push notification event handler is present, send push notification.
+        if let Some((push_tx, _)) = self.push.as_ref() {
+            let mut notification = Notification::new();
+
+            // build notification body.
+            notification
+                .summary("Melodix")
+                .auto_icon()
+                .body(&format!(
+                    "{}\n{}\n{}",
+                    state.0.name, state.1.name, state.2.name
+                ))
+                .action(Self::PUSH_COMMAND_SKIP_A, "Skip - 1")
+                .action(Self::PUSH_COMMAND_SKIP_B, "Skip + 1");
+
+            let mut use_icon = false;
+
+            // if the current track has an icon and dimension for the icon...
+            if let Some(icon) = &state.2.icon.0 && let Some(size) = state.2.icon.1 {
+                // try loading the icon, either as an RGBA or RGB image.
+                let icon = {
+                    if let Ok(icon) = Image::from_rgba(size.0 as i32, size.1 as i32, icon.to_vec()) {
+                        Some(icon)
+                    } else if let Ok(icon) = Image::from_rgb(size.0 as i32, size.1 as i32, icon.to_vec()) {
+                        Some(icon)
+                    } else {
+                        None
+                    }
+                };
+
+                // if we could load the icon, set it as the notification icon.
+                if let Some(icon) = icon {
+                    use_icon = true;
+                    notification.image_data(icon);
+                }
+            }
+
+            // track icon isn't present or couldn't be set, but we have an icon for the album.
+            if let Some(icon) = &state.1.icon && !use_icon {
+                // set it as the notification icon.
+                notification.image_path(icon);
+            }
+
+            // clone context, push sender.
+            let context = context.clone();
+            let push_tx = push_tx.clone();
+
+            let notification = notification.show()?;
+
+            // send notification, await action from user.
+            std::thread::spawn(move || {
+                notification.wait_for_action(move |action| {
+                    context.request_repaint();
+                    push_tx.send(action.to_string()).expect("System::push_notification(): Couldn't send push event.");
+                });
+            });
         }
 
         Ok(())

@@ -48,17 +48,17 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use id3::{Error, Tag};
 use rodio::Source;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::io::BufReader;
-use std::path::Path;
-use std::time::{Duration, UNIX_EPOCH};
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use std::{
+    collections::HashMap,
+    io::BufReader,
+    path::Path,
+    time::{Duration, SystemTime},
+};
+use symphonia::core::{
+    formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+};
 use walkdir::WalkDir;
 
 //================================================================
@@ -68,6 +68,8 @@ use rayon::prelude::*;
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Library {
     pub list_group: Vec<Group>,
+    #[serde(skip)]
+    pub list_shown: (Vec<usize>, Vec<usize>, Vec<usize>),
 }
 
 impl Library {
@@ -75,12 +77,77 @@ impl Library {
 
     pub fn new() -> Self {
         if let Ok(file) = std::fs::read(Self::PATH_LIBRARY) {
-            if let Ok(library) = postcard::from_bytes(&file) {
-                return library;
+            if let Ok(library) = postcard::from_bytes::<Self>(&file) {
+                return Self {
+                    list_shown: (
+                        (0..library.list_group.len()).collect(),
+                        Vec::default(),
+                        Vec::default(),
+                    ),
+                    list_group: library.list_group,
+                };
             }
         }
 
         Self::default()
+    }
+
+    pub fn refresh(&mut self) -> anyhow::Result<()> {
+        let mut remove = Vec::new();
+
+        for (i_group, group) in self.list_group.iter_mut().enumerate() {
+            for (i_album, album) in group.list_album.iter_mut().enumerate() {
+                for (i_track, track) in album.list_track.iter_mut().enumerate() {
+                    if let Ok(true) = std::fs::exists(&track.path) {
+                        if let Ok(meta) = std::fs::metadata(&track.path)
+                            && let Ok(last_a) = meta.modified()
+                            && let Some(last_b) = track.last
+                        {
+                            if last_a != last_b {
+                                let (_, _, t) = Track::new(&track.path).unwrap();
+
+                                println!("Updated file: {}", track.path);
+                                *track = t;
+                            }
+                        }
+                    } else {
+                        remove.push((i_group, album.name.clone(), track.path.clone()));
+                    }
+                }
+            }
+        }
+
+        for (group, album, track) in remove {
+            self.remove_track(group, &album, &track)?;
+        }
+
+        Ok(())
+    }
+
+    #[rustfmt::skip]
+    pub fn remove_track(&mut self, group: usize, album_name: &str, track_path: &str) -> anyhow::Result<()> {
+        let i_group = self.list_group.get_mut(group).ok_or(anyhow::Error::msg("remove_track(): Couldn't get group."))?;
+        let i_album = i_group.list_album.iter_mut().find(|a| a.name == album_name).unwrap();
+
+        i_album.list_track.retain_mut(|t| { t.path != track_path });
+
+        if i_album.list_track.is_empty() {
+            println!("album is empty!");
+            i_group.list_album.retain_mut(|a| a.name != album_name);
+        }
+
+        if i_group.list_album.is_empty() {
+            println!("group is empty!");
+            self.list_group.remove(group);
+        }
+
+        self.list_shown = (
+            (0..self.list_group.len()).collect(),
+            Vec::default(),
+            Vec::default(),
+        );
+
+        Ok(())
     }
 
     pub fn scan(path: &str) -> Self {
@@ -132,7 +199,14 @@ impl Library {
             }
         }
 
-        let library = Self { list_group };
+        let library = Self {
+            list_shown: (
+                (0..list_group.len()).collect(),
+                Vec::default(),
+                Vec::default(),
+            ),
+            list_group,
+        };
 
         let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
         std::fs::write("library.data", serialize).unwrap();
@@ -174,13 +248,7 @@ impl Group {
             }
         }
 
-        let icon = {
-            if track.icon.is_none() {
-                Self::get_image(&track.path)
-            } else {
-                None
-            }
-        };
+        let icon = Self::get_image(&track.path);
 
         self.list_album.push(Album {
             name: album.to_string(),
@@ -206,9 +274,10 @@ pub struct Track {
     pub name: String,
     pub path: String,
     pub time: Duration,
+    pub last: Option<SystemTime>,
     pub date: Option<String>,
     pub kind: Option<String>,
-    pub icon: Option<Vec<u8>>,
+    pub icon: (Option<Vec<u8>>, Option<(u32, u32)>),
     pub track: Option<usize>,
 }
 
@@ -216,6 +285,16 @@ impl Track {
     pub fn new(path: &str) -> Option<(Option<String>, Option<String>, Track)> {
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
+
+        let last = {
+            if let Ok(meta) = src.metadata()
+                && let Ok(last) = meta.modified()
+            {
+                Some(last)
+            } else {
+                None
+            }
+        };
 
         // Create the media source stream.
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
@@ -255,8 +334,9 @@ impl Track {
                 path: path.to_string(),
                 date: None,
                 kind: None,
+                last,
                 time,
-                icon: None,
+                icon: (None, None),
                 track: None,
             };
 
@@ -288,7 +368,17 @@ impl Track {
                 }
 
                 if let Some(visual) = revision.visuals().first() {
-                    file_track.icon = Some(visual.data.to_vec());
+                    let size = {
+                        if let Some(size) = visual.dimensions {
+                            Some((size.width, size.height))
+                        } else if let Ok(image) = image::load_from_memory(&visual.data) {
+                            Some((image.width(), image.height()))
+                        } else {
+                            None
+                        }
+                    };
+
+                    file_track.icon = (Some(visual.data.to_vec()), size);
                 }
             }
 
@@ -296,39 +386,5 @@ impl Track {
         }
 
         None
-    }
-}
-
-//================================================================
-
-#[derive(Default, Debug, Clone)]
-pub struct EditorTrack {
-    pub path: String,
-    pub data: Tag,
-}
-
-impl EditorTrack {
-    pub fn new_from_path(path: &str) -> Vec<Self> {
-        let folder: Vec<String> = std::fs::read_dir(path)
-            .unwrap()
-            .into_iter()
-            .map(|x| x.unwrap().path().to_str().unwrap().to_string())
-            .collect();
-        let mut folder: Vec<Self> = folder
-            .par_iter()
-            .filter_map(|entry| match Tag::read_from_path(&entry) {
-                Ok(tag) => Some(Self {
-                    path: entry.to_string(),
-                    data: tag,
-                }),
-                _ => Some(Self {
-                    path: entry.to_string(),
-                    data: Tag::new(),
-                }),
-            })
-            .collect();
-        folder.sort_by(|a, b| a.path.cmp(&b.path));
-
-        folder
     }
 }

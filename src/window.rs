@@ -48,24 +48,13 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
-use crate::app::*;
-use crate::library::*;
-use crate::script::*;
+use crate::{app::*, library::*};
 
 //================================================================
 
-use eframe::egui::{self, ImageSource, Key, OpenUrl, Slider, Vec2};
-use eframe::egui::{Color32, TextureOptions};
+use eframe::egui::{self, Color32, Slider, TextureOptions, Vec2};
 use egui_extras::{Column, TableBuilder};
-use egui_toast::{Toast, Toasts};
-use id3::TagLike;
-use mlua::prelude::*;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use serde::Deserialize;
+use egui_toast::Toasts;
 
 //================================================================
 
@@ -73,7 +62,6 @@ pub struct Window {
     pub layout: Layout,
     pub replay: bool,
     pub random: bool,
-    pub filter: (Vec<usize>, Vec<usize>, Vec<usize>),
     pub search: (String, String, String),
     pub select: (
         (Option<usize>, Option<usize>),
@@ -82,16 +70,13 @@ pub struct Window {
     ),
     pub state: Option<(usize, usize, usize)>,
     pub queue: (Vec<(usize, usize, usize)>, usize),
-    pub toast: Arc<Mutex<Toasts>>,
-    pub editor_select: Vec<bool>,
-    pub editor_active: Vec<EditorTrack>,
+    pub toast: Toasts,
 }
 
 #[derive(PartialEq)]
 pub enum Layout {
     Welcome,
     Library,
-    Editor,
     Queue,
     Setup,
     About,
@@ -127,23 +112,13 @@ impl Window {
             },
             replay: false,
             random: false,
-            filter: (
-                (0..library.list_group.len()).collect(),
-                Vec::default(),
-                Vec::default(),
-            ),
             search: (String::default(), String::default(), String::default()),
             select: ((None, None), (None, None), (None, None)),
             state: None,
             queue: (Vec::default(), 0),
-            toast: Arc::new(Mutex::new(
-                Toasts::new()
-                    .anchor(Align2::RIGHT_BOTTOM, (-8.0, -8.0))
-                    .direction(egui::Direction::BottomUp),
-            )),
-            // TO-DO move this into its own struct
-            editor_select: Vec::default(),
-            editor_active: Vec::default(),
+            toast: Toasts::new()
+                .anchor(Align2::RIGHT_BOTTOM, (-8.0, -8.0))
+                .direction(egui::Direction::BottomUp),
         }
     }
 
@@ -161,15 +136,11 @@ impl Window {
             }
         }
 
-        if let Ok(mut toast) = app.window.toast.lock() {
-            toast.show(context);
-        }
+        app.window.toast.show(context);
 
         match app.window.layout {
             Layout::Welcome => Self::draw_welcome(app, context),
             Layout::Library => Self::draw_library(app, context),
-            //Layout::Network => Self::draw_library(app, context),
-            Layout::Editor => Self::draw_editor(app, context),
             Layout::Queue => Self::draw_queue(app, context),
             Layout::Setup => Self::draw_setup(app, context),
             Layout::About => Self::draw_about(app, context),
@@ -209,7 +180,6 @@ impl Window {
         egui::TopBottomPanel::top("layout").show(context, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut app.window.layout, Layout::Library, "Library");
-                ui.selectable_value(&mut app.window.layout, Layout::Editor, "Editor");
                 ui.selectable_value(&mut app.window.layout, Layout::Queue, "Queue");
                 ui.selectable_value(&mut app.window.layout, Layout::Setup, "Setup");
                 ui.selectable_value(&mut app.window.layout, Layout::About, "About");
@@ -289,126 +259,11 @@ impl Window {
 
             if let Some(detach) = detach {
                 if detach.1 {
-                    app.track_skip_b(context);
+                    App::error_result(app.track_skip_b(context));
                 }
 
                 // TO-DO handle queue management in a better way...
                 app.window.queue.0.remove(detach.0);
-            }
-        });
-    }
-
-    //================================================================
-    // editor layout.
-    //================================================================
-
-    #[rustfmt::skip]
-    fn draw_editor(app: &mut App, context: &egui::Context) {
-        Self::draw_panel_layout(app, context);
-
-        egui::TopBottomPanel::top("editor_panel_top").show(context, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    app.window.editor_active.par_iter().for_each(|track| {
-                        println!("wrote {}", track.path);
-                        track.data.write_to_path(&track.path, track.data.version()).unwrap();
-                    });
-                }
-
-                if ui.button("Load").clicked() {
-                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                        let folder = EditorTrack::new_from_path(folder.as_path().to_str().unwrap());
-                        app.window.editor_select = [false].repeat(folder.len());
-                        app.window.editor_active = folder;
-                    }
-                }
-            });
-        });
-
-        egui::SidePanel::right("editor_panel_side").min_width(320.0).show(context, |ui| {
-            let mut edit_group = String::new();
-            let mut edit_album = String::new();
-            let mut edit_track = String::new();
-            let mut edit_order = 0;
-
-            for (i, select) in app.window.editor_select.iter().enumerate() {
-                if *select {
-                    let track = app.window.editor_active.get(i).unwrap();
-                    if let Some(group) = track.data.artist() { edit_group = group.to_string() };
-                    if let Some(album) = track.data.album()  { edit_album = album.to_string() };
-                    if let Some(track) = track.data.title()  { edit_track = track.to_string() };
-                    break;
-                }
-            }
-
-            let edit_field = |ui: &mut egui::Ui, app: &mut App, label: &str, field: &mut String, call: fn(&mut EditorTrack, &str)| {
-                ui.label(label);
-                if ui.text_edit_singleline(field).changed() {
-                    for (i, active) in app.window.editor_select.iter().enumerate() {
-                        if *active {
-                            let track = app.window.editor_active.get_mut(i).unwrap();
-                            call(track, field);
-                        }
-                    }
-                };
-            };
-
-            edit_field(ui, app, "Group", &mut edit_group, |track, field| track.data.set_artist(field));
-            edit_field(ui, app, "Album", &mut edit_album, |track, field| track.data.set_album(field));
-            edit_field(ui, app, "Track", &mut edit_track, |track, field| track.data.set_title(field));
-        });
-
-        egui::CentralPanel::default().show(context, |ui| {
-            let table = TableBuilder::new(ui)
-                .striped(true)
-                .sense(egui::Sense::click())
-                .column(Column::remainder())
-                .header(16.0, |mut header| {
-                    header.col(|ui| { ui.strong("Path"); });
-                });
-
-            let mut space = false;
-            let mut reset = None;
-
-            table.body(|ui| {
-                ui.rows(16.0, app.window.editor_active.len(), |mut row| {
-                    let index = row.index();
-                    let track = app.window.editor_active.get_mut(index).unwrap();
-                    let state = app.window.editor_select.get_mut(index).unwrap();
-                    let path : Vec<&str>  = track.path.split("/").collect();
-                    let path = path.last().unwrap_or(&"");
-
-                    row.set_selected(*state);
-
-                    row.col(|ui| { ui.add(egui::Label::new(*path).selectable(false)); });
-
-                    if context.input(|i| i.modifiers.ctrl && i.key_pressed(Key::A)) {
-                        space = true;
-                    }
-
-                    if row.response().clicked() {
-                        if context.input(|i| i.modifiers.shift) {
-                            *state = !*state;
-                        } else {
-                            *state = !*state;
-                            reset = Some(index);
-                        }
-                    }
-                })
-            });
-
-            if space {
-                for select in &mut app.window.editor_select {
-                    *select = !*select;
-                }
-            }
-
-            if let Some(reset) = reset {
-                for (i, select) in app.window.editor_select.iter_mut().enumerate() {
-                    if i != reset {
-                        *select = false;
-                    }
-                }
             }
         });
     }
@@ -461,49 +316,39 @@ impl Window {
     // setting layout.
     //================================================================
 
+    #[rustfmt::skip]
     fn draw_setup(app: &mut App, context: &egui::Context) {
         Self::draw_panel_layout(app, context);
 
         egui::CentralPanel::default().show(context, |ui| {
             ui.heading("Melodix Configuration");
+
+
             if ui.button("Scan Folder").clicked() {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                     app.library = Library::scan(&folder.as_path().display().to_string());
                     app.window.layout = Layout::Library;
                 }
             }
-            if ui
-                .add(
-                    egui::Slider::new(&mut app.setting.window_scale, 1.0..=2.0)
-                        .text("Window scale factor"),
-                )
-                .drag_stopped()
-            {
+            if ui.button("Refresh Library").clicked() {
+                app.library.refresh();
+            }
+
+            if ui.add(egui::Slider::new(&mut app.setting.window_scale, 1.0..=2.0).text("Window scale factor")).drag_stopped() {
                 context.set_zoom_factor(app.setting.window_scale);
             };
-            if ui
-                .checkbox(&mut app.setting.window_theme, "Use alternate window theme")
-                .clicked()
-            {
+
+            if ui.checkbox(&mut app.setting.window_theme, "Use alternate window theme").clicked() {
                 if app.setting.window_theme {
                     context.set_theme(egui::Theme::Light);
                 } else {
                     context.set_theme(egui::Theme::Dark);
                 }
             };
-            ui.checkbox(&mut app.setting.window_style, "Use alternate window style");
-            ui.checkbox(&mut app.setting.window_media, "Allow multi-media key usage");
-            ui.checkbox(&mut app.setting.window_tray, "Show tray icon");
-            ui.checkbox(&mut app.setting.window_push, "Show track notification");
-            ui.checkbox(
-                &mut app.setting.library_find,
-                "Allow automatic library scan",
-            );
-            ui.checkbox(&mut app.setting.script_allow, "Allow Lua plug-in scripting");
-            ui.checkbox(
-                &mut app.setting.update_check,
-                "Allow automatic update check",
-            );
+            ui.checkbox(&mut app.setting.window_media, "Allow multi-media key usage").on_hover_text("Will take effect on restart.");
+            ui.checkbox(&mut app.setting.window_tray,  "Show tray icon").on_hover_text("Will take effect on restart.");
+            ui.checkbox(&mut app.setting.window_push,  "Show track notification").on_hover_text("Will take effect on restart.");
+            ui.checkbox(&mut app.setting.script_allow, "Allow Lua plug-in scripting").on_hover_text("Will take effect on restart.");
 
             if app.setting.script_allow {
                 ui.separator();
@@ -546,7 +391,7 @@ impl Window {
 
     // draw the top track status bar. hidden if no track is available.
     fn draw_panel_status(app: &mut App, context: &egui::Context) {
-        if let Some(active) = app.window.state {
+        if app.window.state.is_some() {
             egui::TopBottomPanel::top("status").show(context, |ui| {
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.add_space(6.0);
@@ -558,7 +403,7 @@ impl Window {
                             false,
                             app.setting.window_theme,
                         ) {
-                            app.track_skip_a(context);
+                            App::error_result(app.track_skip_a(context));
                         }
 
                         let image = if app.system.sink.is_paused() {
@@ -577,7 +422,7 @@ impl Window {
                             false,
                             app.setting.window_theme,
                         ) {
-                            app.track_skip_b(context);
+                            App::error_result(app.track_skip_b(context));
                         }
 
                         if Self::draw_button_image(
@@ -653,18 +498,7 @@ impl Window {
 
                         let (group, album, track) = app.get_play_state();
 
-                        if let Some(icon) = &album.icon {
-                            let image = egui::Image::new(format!("file://{icon}"))
-                                .texture_options(
-                                    TextureOptions::default()
-                                        .with_mipmap_mode(Some(egui::TextureFilter::Nearest)),
-                                )
-                                .fit_to_exact_size(Vec2::new(48.0, 48.0));
-
-                            ui.add(image);
-                        }
-
-                        if let Some(icon) = &track.icon {
+                        if let Some(icon) = &track.icon.0 {
                             let path = format!("bytes://{}", track.name);
 
                             let image = match context.try_load_bytes(&path) {
@@ -680,6 +514,15 @@ impl Window {
                                     )
                                     .fit_to_exact_size(Vec2::new(48.0, 48.0)),
                             );
+                        } else if let Some(icon) = &album.icon {
+                            let image = egui::Image::new(format!("file://{icon}"))
+                                .texture_options(
+                                    TextureOptions::default()
+                                        .with_mipmap_mode(Some(egui::TextureFilter::Nearest)),
+                                )
+                                .fit_to_exact_size(Vec2::new(48.0, 48.0));
+
+                            ui.add(image);
                         }
 
                         ui.vertical(|ui| {
@@ -699,20 +542,29 @@ impl Window {
         app.window.queue.1 = 0;
     }
 
-    fn queue_play_group(app: &mut App, i_group: usize, context: &egui::Context) {
+    fn queue_play_group(
+        app: &mut App,
+        i_group: usize,
+        context: &egui::Context,
+    ) -> anyhow::Result<()> {
         Self::queue_reset(app);
         let group = app.library.list_group.get(i_group).unwrap();
 
         for (i_album, album) in group.list_album.iter().enumerate() {
-            for (i_track, track) in album.list_track.iter().enumerate() {
+            for (i_track, _) in album.list_track.iter().enumerate() {
                 app.window.queue.0.push((i_group, i_album, i_track));
             }
         }
 
-        app.track_add((i_group, 0, 0), context);
+        app.track_add((i_group, 0, 0), context)
     }
 
-    fn queue_play_album(app: &mut App, group: usize, album: usize, context: &egui::Context) {
+    fn queue_play_album(
+        app: &mut App,
+        group: usize,
+        album: usize,
+        context: &egui::Context,
+    ) -> anyhow::Result<()> {
         Self::queue_reset(app);
         let i_group = app.library.list_group.get(group).unwrap();
         let i_album = i_group.list_album.get(album).unwrap();
@@ -721,7 +573,7 @@ impl Window {
             app.window.queue.0.push((group, album, x));
         }
 
-        app.track_add((group, album, 0), context);
+        app.track_add((group, album, 0), context)
     }
 
     fn queue_play_track(
@@ -730,7 +582,7 @@ impl Window {
         album: usize,
         track: usize,
         context: &egui::Context,
-    ) {
+    ) -> anyhow::Result<()> {
         Self::queue_reset(app);
         let i_group = app.library.list_group.get(group).unwrap();
         let i_album = i_group.list_album.get(album).unwrap();
@@ -739,7 +591,7 @@ impl Window {
             app.window.queue.0.push((group, album, x));
         }
 
-        app.track_add((group, album, track), context);
+        app.track_add((group, album, track), context)
     }
 
     #[rustfmt::skip]
@@ -756,9 +608,9 @@ impl Window {
                 ui.add_space(6.0);
 
                 if ui.text_edit_singleline(&mut app.window.search.0).changed() {
-                    app.window.filter.0.clear();
-                    app.window.filter.1.clear();
-                    app.window.filter.2.clear();
+                    app.library.list_shown.0.clear();
+                    app.library.list_shown.1.clear();
+                    app.library.list_shown.2.clear();
                     app.window.select.0 = (None, None);
                     app.window.select.1 = (None, None);
                     app.window.select.2 = (None, None);
@@ -770,7 +622,7 @@ impl Window {
                             .trim()
                             .contains(app.window.search.0.to_lowercase().trim())
                         {
-                            app.window.filter.0.push(i);
+                            app.library.list_shown.0.push(i);
                         }
                     }
                 };
@@ -793,13 +645,13 @@ impl Window {
                     });
 
                 table.body(|ui| {
-                    ui.rows(16.0, app.window.filter.0.len(), |mut row| {
+                    ui.rows(16.0, app.library.list_shown.0.len(), |mut row| {
                         let i = row.index();
                         if let Some(select) = app.window.select.0.1 {
                             row.set_selected(i == select);
                         }
 
-                        let index = app.window.filter.0.get(i).unwrap();
+                        let index = app.library.list_shown.0.get(i).unwrap();
                         let group = app.library.list_group.get(*index).unwrap();
 
                         row.col(|ui| { ui.add(egui::Label::new(&group.name).selectable(false)); });
@@ -808,7 +660,7 @@ impl Window {
                             app.window.select.0 = (Some(*index), Some(i));
                             app.window.select.1 = (None, None);
                             app.window.select.2 = (None, None);
-                            app.window.filter.1 = (0..group.list_album.len()).collect();
+                            app.library.list_shown.1 = (0..group.list_album.len()).collect();
                         }
 
                         if row.response().double_clicked() {
@@ -820,11 +672,11 @@ impl Window {
                 });
 
                 if sort {
-                    app.window.filter.0.reverse();
+                    app.library.list_shown.0.reverse();
                 }
 
                 if let Some(click) = click {
-                    Self::queue_play_group(app, click.0, context);
+                    App::error_result(Self::queue_play_group(app, click.0, context));
                 }
             });
     }
@@ -845,8 +697,8 @@ impl Window {
                     let group = app.library.list_group.get(select).unwrap();
 
                     if ui.text_edit_singleline(&mut app.window.search.1).changed() {
-                        app.window.filter.1.clear();
-                        app.window.filter.2.clear();
+                        app.library.list_shown.1.clear();
+                        app.library.list_shown.2.clear();
                         app.window.select.1 = (None, None);
                         app.window.select.2 = (None, None);
 
@@ -855,9 +707,9 @@ impl Window {
                                 .name
                                 .to_lowercase()
                                 .trim()
-                                .contains(&app.window.search.1.to_lowercase().trim())
+                                .contains(app.window.search.1.to_lowercase().trim())
                             {
-                                app.window.filter.1.push(i);
+                                app.library.list_shown.1.push(i);
                             }
                         }
                     };
@@ -880,13 +732,13 @@ impl Window {
                         });
 
                     table.body(|ui| {
-                        ui.rows(16.0, app.window.filter.1.len(), |mut row| {
+                        ui.rows(16.0, app.library.list_shown.1.len(), |mut row| {
                             let i = row.index();
                             if let Some(select) = app.window.select.1.1 {
                                 row.set_selected(i == select);
                             }
 
-                            let index = app.window.filter.1.get(i).unwrap();
+                            let index = app.library.list_shown.1.get(i).unwrap();
                             let album = group.list_album.get(*index).unwrap();
 
                             row.col(|ui| {
@@ -896,7 +748,7 @@ impl Window {
                             if row.response().clicked() {
                                 app.window.select.1 = (Some(*index), Some(i));
                                 app.window.select.2 = (None, None);
-                                app.window.filter.2 = (0..album.list_track.len()).collect();
+                                app.library.list_shown.2 = (0..album.list_track.len()).collect();
                             }
 
                             if row.response().double_clicked() {
@@ -909,11 +761,11 @@ impl Window {
                     });
 
                     if sort {
-                        app.window.filter.1.reverse();
+                        app.library.list_shown.1.reverse();
                     }
 
                     if let Some(click) = click {
-                        Self::queue_play_album(app, click.0, click.1, context);
+                        App::error_result(Self::queue_play_album(app, click.0, click.1, context));
                     }
                 }
             });
@@ -926,7 +778,6 @@ impl Window {
             .resizable(false)
             .exact_height(rect.max.y / 2.0)
             .show(context, |ui| {
-                let mut right = false;
                 let mut click = None;
 
                 if let Some(group) = app.window.select.0.0
@@ -938,7 +789,7 @@ impl Window {
                     ui.add_space(6.0);
 
                     if ui.text_edit_singleline(&mut app.window.search.2).changed() {
-                        app.window.filter.2.clear();
+                        app.library.list_shown.2.clear();
                         app.window.select.2 = (None, None);
 
                         for (i, track) in album.list_track.iter().enumerate() {
@@ -946,9 +797,9 @@ impl Window {
                                 .name
                                 .to_lowercase()
                                 .trim()
-                                .contains(&app.window.search.2.to_lowercase().trim())
+                                .contains(app.window.search.2.to_lowercase().trim())
                             {
-                                app.window.filter.2.push(i);
+                                app.library.list_shown.2.push(i);
                             }
                         }
                     };
@@ -982,13 +833,13 @@ impl Window {
                         });
 
                     table.body(|ui| {
-                        ui.rows(16.0, app.window.filter.2.len(), |mut row| {
+                        ui.rows(16.0, app.library.list_shown.2.len(), |mut row| {
                             let i = row.index();
                             if let Some(select) = app.window.select.2.1 {
                                 row.set_selected(i == select);
                             }
 
-                            let index = app.window.filter.2.get(i).unwrap();
+                            let index = app.library.list_shown.2.get(i).unwrap();
                             let track = album.list_track.get(*index).unwrap();
 
                             row.col(|ui| {
@@ -1045,13 +896,13 @@ impl Window {
                     });
 
                     if let Some(click) = click {
-                        Self::queue_play_track(
+                        App::error_result(Self::queue_play_track(
                             app,
                             app.window.select.0.0.unwrap(),
                             app.window.select.1.0.unwrap(),
                             click,
                             context,
-                        );
+                        ));
                     }
                 }
             });
