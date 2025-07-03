@@ -50,12 +50,7 @@
 
 use rodio::Source;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    io::BufReader,
-    path::Path,
-    time::{Duration, SystemTime},
-};
+use std::{collections::HashMap, io::BufReader, path::Path, time::Duration};
 use symphonia::core::{
     formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
 };
@@ -90,64 +85,6 @@ impl Library {
         }
 
         Self::default()
-    }
-
-    pub fn refresh(&mut self) -> anyhow::Result<()> {
-        let mut remove = Vec::new();
-
-        for (i_group, group) in self.list_group.iter_mut().enumerate() {
-            for (i_album, album) in group.list_album.iter_mut().enumerate() {
-                for (i_track, track) in album.list_track.iter_mut().enumerate() {
-                    if let Ok(true) = std::fs::exists(&track.path) {
-                        if let Ok(meta) = std::fs::metadata(&track.path)
-                            && let Ok(last_a) = meta.modified()
-                            && let Some(last_b) = track.last
-                        {
-                            if last_a != last_b {
-                                let (_, _, t) = Track::new(&track.path).unwrap();
-
-                                println!("Updated file: {}", track.path);
-                                *track = t;
-                            }
-                        }
-                    } else {
-                        remove.push((i_group, album.name.clone(), track.path.clone()));
-                    }
-                }
-            }
-        }
-
-        for (group, album, track) in remove {
-            self.remove_track(group, &album, &track)?;
-        }
-
-        Ok(())
-    }
-
-    #[rustfmt::skip]
-    pub fn remove_track(&mut self, group: usize, album_name: &str, track_path: &str) -> anyhow::Result<()> {
-        let i_group = self.list_group.get_mut(group).ok_or(anyhow::Error::msg("remove_track(): Couldn't get group."))?;
-        let i_album = i_group.list_album.iter_mut().find(|a| a.name == album_name).unwrap();
-
-        i_album.list_track.retain_mut(|t| { t.path != track_path });
-
-        if i_album.list_track.is_empty() {
-            println!("album is empty!");
-            i_group.list_album.retain_mut(|a| a.name != album_name);
-        }
-
-        if i_group.list_album.is_empty() {
-            println!("group is empty!");
-            self.list_group.remove(group);
-        }
-
-        self.list_shown = (
-            (0..self.list_group.len()).collect(),
-            Vec::default(),
-            Vec::default(),
-        );
-
-        Ok(())
     }
 
     pub fn scan(path: &str) -> Self {
@@ -232,7 +169,6 @@ impl Group {
             let path = path.unwrap().path().display().to_string();
 
             if path.ends_with(".jpg") {
-                println!("Found {path}");
                 return Some(path);
             }
         }
@@ -274,7 +210,6 @@ pub struct Track {
     pub name: String,
     pub path: String,
     pub time: Duration,
-    pub last: Option<SystemTime>,
     pub date: Option<String>,
     pub kind: Option<String>,
     pub icon: (Option<Vec<u8>>, Option<(u32, u32)>),
@@ -285,16 +220,6 @@ impl Track {
     pub fn new(path: &str) -> Option<(Option<String>, Option<String>, Track)> {
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
-
-        let last = {
-            if let Ok(meta) = src.metadata()
-                && let Ok(last) = meta.modified()
-            {
-                Some(last)
-            } else {
-                None
-            }
-        };
 
         // Create the media source stream.
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
@@ -334,7 +259,6 @@ impl Track {
                 path: path.to_string(),
                 date: None,
                 kind: None,
-                last,
                 time,
                 icon: (None, None),
                 track: None,
