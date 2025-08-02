@@ -48,9 +48,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use std::path::PathBuf;
-
-use crate::{app::*, library::*};
+use crate::{app::*, library::*, script::*};
 
 //================================================================
 
@@ -62,8 +60,11 @@ use rand::seq::{IndexedRandom, SliceRandom};
 //================================================================
 
 pub struct Window {
+    /// currently active layout (library, queue, etc.)
     pub layout: Layout,
+    /// replay state; do we replay the current track?
     pub replay: bool,
+    /// random state; do we randomize the current track?
     pub random: bool,
     pub search: (String, String, String),
     pub select: (
@@ -87,7 +88,7 @@ pub enum Layout {
 
 impl Window {
     const IMAGE_SKIP_A: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_a.png");
-    const IMAGE_SKIP_B: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_b.png");
+    const IMAGE_SKIP_B: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_b.svg");
     const IMAGE_PLAY: eframe::egui::ImageSource<'_> = egui::include_image!("../data/play.png");
     const IMAGE_PAUSE: eframe::egui::ImageSource<'_> = egui::include_image!("../data/pause.png");
     const IMAGE_REPLAY: eframe::egui::ImageSource<'_> = egui::include_image!("../data/replay.png");
@@ -394,6 +395,29 @@ impl Window {
                 }
             }
 
+            if ui.button("Dump Sample Lua Plug-In").clicked() {
+                if !std::fs::exists("script").unwrap() {
+                    std::fs::create_dir("script").unwrap();
+                }
+
+                let main = std::fs::write("script/main.lua", Script::DATA_MAIN);
+                let meta = std::fs::write("script/meta.lua", Script::DATA_META);
+
+                if main.is_ok() && meta.is_ok() {
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Info)
+                        .set_title("Lua Plug-In")
+                        .set_description("A new script/ folder has been made in the root directory of your Melodix installation, and within it, the API documentation for Melodix as well as a sample Lua plug-in. Enable 'Allow Lua plug-in scripting' and restart Melodix for the change to take effect.")
+                        .show();
+                } else {
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("Lua Plug-In")
+                        .set_description("Could not write the sample Lua plug-in.")
+                        .show();
+                }
+            }
+
             if ui.add(egui::Slider::new(&mut app.setting.window_scale, 1.0..=2.0).text("Window scale factor")).drag_stopped() {
                 context.set_zoom_factor(app.setting.window_scale);
             };
@@ -531,7 +555,7 @@ impl Window {
 
                         ui.separator();
 
-                        let (_, _, track) = app.get_play_state();
+                        let (_, _, track) = app.get_play_state().unwrap();
 
                         let play_time =
                             Self::format_time(app.system.sink.get_pos().as_secs() as usize);
@@ -556,7 +580,7 @@ impl Window {
 
                         ui.separator();
 
-                        let (group, album, track) = app.get_play_state();
+                        let (group, album, track) = app.get_play_state().unwrap();
 
                         if let Some(icon) = &track.icon.0 {
                             let path = format!("bytes://{}", track.name);
@@ -717,6 +741,20 @@ impl Window {
 
                         row.col(|ui| { ui.add(egui::Label::new(&group.name).selectable(false)); });
 
+                        row.response().context_menu(|ui| {
+                            for script in &mut app.script.script_list {
+                                if let Some(s_group) = &mut script.0.group {
+                                    ui.collapsing(&script.0.name, |ui| {
+                                        let table: mlua::Table = script.1.get("group").unwrap();
+
+                                        for (key, value) in s_group.iter() {
+                                            value.draw(&script.1, &table.get(&**key).unwrap(), ui, (*index,));
+                                        }
+                                    });
+                                }
+                            }
+                        });
+
                         if row.response().clicked() {
                             app.window.select.0 = (Some(*index), Some(i));
                             app.window.select.1 = (None, None);
@@ -806,6 +844,25 @@ impl Window {
                                 ui.add(egui::Label::new(&album.name).selectable(false));
                             });
 
+                            row.response().context_menu(|ui| {
+                                for script in &mut app.script.script_list {
+                                    if let Some(s_album) = &mut script.0.album {
+                                        ui.collapsing(&script.0.name, |ui| {
+                                            let table: mlua::Table = script.1.get("album").unwrap();
+
+                                            for (key, value) in s_album.iter() {
+                                                value.draw(
+                                                    &script.1,
+                                                    &table.get(&**key).unwrap(),
+                                                    ui,
+                                                    (select, *index),
+                                                );
+                                            }
+                                        });
+                                    }
+                                }
+                            });
+
                             if row.response().clicked() {
                                 app.window.select.1 = (Some(*index), Some(i));
                                 app.window.select.2 = (None, None);
@@ -841,11 +898,11 @@ impl Window {
             .show(context, |ui| {
                 let mut click = None;
 
-                if let Some(group) = app.window.select.0.0
-                    && let Some(album) = app.window.select.1.0
+                if let Some(i_group) = app.window.select.0.0
+                    && let Some(i_album) = app.window.select.1.0
                 {
-                    let group = app.library.list_group.get(group).unwrap();
-                    let album = group.list_album.get(album).unwrap();
+                    let group = app.library.list_group.get(i_group).unwrap();
+                    let album = group.list_album.get(i_album).unwrap();
 
                     ui.add_space(6.0);
 
@@ -947,6 +1004,25 @@ impl Window {
                                     ))
                                     .selectable(false),
                                 );
+                            });
+
+                            row.response().context_menu(|ui| {
+                                for script in &mut app.script.script_list {
+                                    if let Some(s_track) = &mut script.0.track {
+                                        ui.collapsing(&script.0.name, |ui| {
+                                            let table: mlua::Table = script.1.get("track").unwrap();
+
+                                            for (key, value) in s_track.iter() {
+                                                value.draw(
+                                                    &script.1,
+                                                    &table.get(&**key).unwrap(),
+                                                    ui,
+                                                    (i_group, i_album, *index),
+                                                );
+                                            }
+                                        });
+                                    }
+                                }
                             });
 
                             if row.response().clicked() {

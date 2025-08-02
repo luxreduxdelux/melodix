@@ -57,6 +57,8 @@ use std::{io::BufReader, time::Duration};
 
 //================================================================
 
+pub static mut GLOBAL_APP: *mut App = std::ptr::null_mut();
+
 pub struct App {
     pub library: Library,
     pub setting: Setting,
@@ -80,6 +82,11 @@ impl App {
         })
     }
 
+    /// Dereference the global app state.
+    pub fn dereference() -> &'static mut Self {
+        unsafe { &mut *crate::app::GLOBAL_APP }
+    }
+
     pub fn get_state(&self, index: (usize, usize, usize)) -> (&Group, &Album, &Track) {
         let group = self.library.list_group.get(index.0).unwrap();
         let album = group.list_album.get(index.1).unwrap();
@@ -88,22 +95,18 @@ impl App {
         (group, album, track)
     }
 
-    pub fn get_play_state(&self) -> (&Group, &Album, &Track) {
-        let group = self
-            .library
-            .list_group
-            .get(self.window.state.as_ref().unwrap().0)
-            .unwrap();
-        let album = group
-            .list_album
-            .get(self.window.state.as_ref().unwrap().1)
-            .unwrap();
-        let track = album
-            .list_track
-            .get(self.window.state.as_ref().unwrap().2)
-            .unwrap();
+    /// Get current play state.
+    #[rustfmt::skip]
+    pub fn get_play_state(&self) -> Option<(&Group, &Album, &Track)> {
+        if let Some((group, album, track)) = self.window.state {
+            let group = self.library.list_group.get(group).expect("get_play_state(): Invalid group window state.");
+            let album = group.list_album.get(album).expect("get_play_state(): Invalid album window state.");
+            let track = album.list_track.get(track).expect("get_play_state(): Invalid track window state.");
 
-        (group, album, track)
+            return Some((group, album, track));
+        }
+
+        None
     }
 
     pub fn track_add(
@@ -116,7 +119,9 @@ impl App {
         // set active window track state.
         self.window.state = Some((track.0, track.1, track.2));
         // get group, album, track data from window state.
-        let (group, album, track) = self.get_play_state();
+        let (group, album, track) = self
+            .get_play_state()
+            .expect("track_add(): Invalid window state.");
 
         let file = rodio::Decoder::new(BufReader::new(std::fs::File::open(&track.path)?))?;
 
@@ -140,8 +145,8 @@ impl App {
 
         self.system.sink.play();
 
-        //self.script
-        //    .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
+        self.script
+            .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
 
         Ok(())
     }
@@ -246,6 +251,15 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+        if !self.script.initialize {
+            unsafe {
+                GLOBAL_APP = self as *mut App;
+            }
+
+            self.script.call(Script::CALL_BEGIN, ());
+            self.script.initialize = true;
+        }
+
         if let Some(event) = self.system.poll_event() {
             if let Err(error) = System::make_event(event, self, context) {
                 Self::error(&error.to_string());

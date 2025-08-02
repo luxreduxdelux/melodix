@@ -70,8 +70,26 @@ pub struct Library {
 impl Library {
     const PATH_LIBRARY: &'static str = "library.data";
 
+    fn get_path() -> String {
+        let home = {
+            if let Some(path) = std::env::home_dir() {
+                let path = format!("{}/.melodix/", path.display().to_string());
+
+                if let Ok(false) = std::fs::exists(&path) {
+                    std::fs::create_dir(&path).unwrap();
+                }
+
+                path
+            } else {
+                String::default()
+            }
+        };
+
+        format!("{home}{}", Self::PATH_LIBRARY)
+    }
+
     pub fn new() -> Self {
-        if let Ok(file) = std::fs::read(Self::PATH_LIBRARY) {
+        if let Ok(file) = std::fs::read(Self::get_path()) {
             if let Ok(library) = postcard::from_bytes::<Self>(&file) {
                 return Self {
                     list_shown: (
@@ -146,7 +164,7 @@ impl Library {
         };
 
         let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
-        std::fs::write("library.data", serialize).unwrap();
+        std::fs::write(Self::get_path(), serialize).unwrap();
 
         library
     }
