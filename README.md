@@ -10,15 +10,15 @@ A simple music player, written in Rust.
 Download the latest release from [here](https://github.com/luxreduxdelux/melodix/releases) and launch Melodix.
 
 ## Documentation
-The Lua plug-in API documentation can be found [here](TO-DO).
+The Lua plug-in API documentation can be found [here](https://github.com/luxreduxdelux/melodix/blob/main/src/lua/meta.lua).
 
 ## Build
 Run `cargo build --release` in the root of the Melodix folder.
 
+Alternatively, download [Boondle](https://github.com/luxreduxdelux/boondle) and open the `boondle` folder to compile and package a .deb/.AppImage from source.
+
 ## Acknowledgement
 [agus-balles](https://github.com/agus-balles) for additional help.
-
-[axelcy](https://github.com/axelcy) for testing.
 
 ## License
 Melodix has a BSD-2-Clause-Patent license.

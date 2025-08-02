@@ -1,0 +1,6 @@
+*
+!.gitignore
+!compile.sh
+!package.sh
+!project.json
+!README.md

@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "name": "Melodix",
+    "icon": "../data/icon.png",
+    "info": "Music player.",
+    "from": "luxreduxdelux",
+    "version": "1.0.0",
+    "name_generic": "",
+    "comment": "A simple music player.",
+    "category": "",
+    "key_word": "",
+    "command_line": false
+  },
+  "compile": [
+    {
+      "type": "Script",
+      "name": "",
+      "script": "compile.sh",
+      "layout": [],
+      "enable": true
+    }
+  ],
+  "package": [
+    {
+      "type": "AppImage",
+      "name": "",
+      "file": "{name}_{version}",
+      "binary": "../target/release/melodix",
+      "script": null,
+      "enable": true
+    },
+    {
+      "type": "Debian",
+      "name": "",
+      "file": "{name}_{version}",
+      "binary": "../target/release/melodix",
+      "script_prior": null,
+      "script_after": null,
+      "architecture": "amd64",
+      "enable": true
+    },
+    {
+      "type": "Script",
+      "name": "",
+      "script": "package.sh",
+      "layout": [],
+      "enable": true
+    }
+  ]
+}
