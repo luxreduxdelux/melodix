@@ -164,13 +164,17 @@ pub struct Module {
 
 impl Module {
     pub fn new(lua: &Lua, path: &str) -> Result<(Self, mlua::Table), ()> {
+        // load the Lua source code.
         let file = std::fs::read_to_string(path).map_err(|_| ())?;
+
+        // retrieve the module table.
         let table = lua.load(file).eval::<mlua::Table>().map_err(|_| ())?;
         let serde = LuaDeserializeOptions::new().deny_unsupported_types(false);
         let value = lua
             .from_value_with(mlua::Value::Table(table.clone()), serde)
             .map_err(|_| ())?;
 
+        // return module info and raw Lua table.
         Ok((value, table))
     }
 }
@@ -179,16 +183,13 @@ pub struct Script {
     #[allow(dead_code)]
     pub lua: Lua,
     pub script_list: Vec<(Module, mlua::Table)>,
-}
-
-impl Drop for Script {
-    fn drop(&mut self) {
-        self.call(Self::CALL_CLOSE, ());
-    }
+    pub initialize: bool,
 }
 
 impl Script {
     const PATH_SCRIPT: &'static str = "script/";
+    pub const DATA_MAIN: &'static str = include_str!("lua/main.lua");
+    pub const DATA_META: &'static str = include_str!("lua/meta.lua");
     pub const CALL_BEGIN: &'static str = "begin";
     pub const CALL_CLOSE: &'static str = "close";
     pub const CALL_SEEK: &'static str = "seek";
@@ -198,24 +199,47 @@ impl Script {
     pub const CALL_SKIP_B: &'static str = "skip_b";
     pub const CALL_PAUSE: &'static str = "pause";
 
+    fn get_path() -> String {
+        let home = {
+            if let Some(path) = std::env::home_dir() {
+                let path = format!("{}/.melodix/", path.display().to_string());
+
+                if let Ok(false) = std::fs::exists(&path) {
+                    std::fs::create_dir(&path).unwrap();
+                }
+
+                path
+            } else {
+                String::default()
+            }
+        };
+
+        format!("{home}{}", Self::PATH_SCRIPT)
+    }
+
     pub fn new(setting: &Setting) -> anyhow::Result<Self> {
         let lua = unsafe { Lua::unsafe_new() };
         let mut script_list = Vec::new();
+        let path = Self::get_path();
 
         if setting.script_allow {
-            for file in std::fs::read_dir(Self::PATH_SCRIPT)? {
-                let file = file?.path().display().to_string();
-                if let Ok(module) = Module::new(&lua, &file) {
-                    script_list.push(module);
+            if let Ok(true) = std::fs::exists(&path) {
+                for file in std::fs::read_dir(&path)? {
+                    let file = file?.path().display().to_string();
+                    if let Ok(module) = Module::new(&lua, &file) {
+                        script_list.push(module);
+                    }
                 }
             }
         }
 
-        let script = Self { lua, script_list };
+        Self::set_global(&lua)?;
 
-        script.call(Self::CALL_BEGIN, ());
-
-        Ok(script)
+        Ok(Self {
+            lua,
+            script_list,
+            initialize: false,
+        })
     }
 
     // TO-DO rename to call, old call should be call_all
@@ -240,5 +264,80 @@ impl Script {
                 }
             }
         }
+    }
+
+    fn set_global(lua: &Lua) -> anyhow::Result<()> {
+        let melodix = lua.create_table()?;
+
+        melodix.set("get_library", lua.create_function(Self::get_library)?)?;
+        melodix.set("get_state", lua.create_function(Self::get_state)?)?;
+        melodix.set("get_queue", lua.create_function(Self::get_queue)?)?;
+        melodix.set("set_toast", lua.create_function(Self::set_toast)?)?;
+
+        lua.globals().set("melodix", melodix)?;
+
+        Ok(())
+    }
+
+    fn get_library(lua: &Lua, _: ()) -> mlua::Result<mlua::Value> {
+        let app = App::dereference();
+
+        lua.to_value(&app.library)
+    }
+
+    fn get_state(lua: &Lua, _: ()) -> mlua::Result<(mlua::Value, mlua::Value, mlua::Value)> {
+        let app = App::dereference();
+
+        if let Some((group, album, track)) = app.get_play_state() {
+            Ok((
+                lua.to_value(&group)?,
+                lua.to_value(&album)?,
+                lua.to_value(&track)?,
+            ))
+        } else {
+            Ok((mlua::Nil, mlua::Nil, mlua::Nil))
+        }
+    }
+
+    fn get_queue(lua: &Lua, _: ()) -> mlua::Result<(mlua::Value, mlua::Value)> {
+        let app = App::dereference();
+
+        let queue = &app.window.queue.0;
+        let queue: Vec<(usize, usize, usize)> = queue
+            .into_iter()
+            .map(|(group, album, track)| (group + 1, album + 1, track + 1))
+            .collect();
+
+        Ok((
+            lua.to_value(&queue)?,
+            lua.to_value(&(app.window.queue.1 + 1))?,
+        ))
+    }
+
+    fn set_toast(_: &Lua, (kind, text, time): (usize, String, f64)) -> mlua::Result<()> {
+        let app = App::dereference();
+
+        app.window.toast.add(egui_toast::Toast {
+            text: text.into(),
+            kind: match kind {
+                0 => egui_toast::ToastKind::Info,
+                1 => egui_toast::ToastKind::Warning,
+                2 => egui_toast::ToastKind::Error,
+                _ => egui_toast::ToastKind::Success,
+            },
+            options: egui_toast::ToastOptions::default()
+                .duration_in_seconds(time)
+                .show_progress(true)
+                .show_icon(true),
+            ..Default::default()
+        });
+
+        Ok(())
+    }
+}
+
+impl Drop for Script {
+    fn drop(&mut self) {
+        self.call(Self::CALL_CLOSE, ());
     }
 }

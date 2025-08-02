@@ -66,8 +66,26 @@ pub struct Setting {
 impl Setting {
     const PATH_SETTING: &'static str = "setting.data";
 
+    fn get_path() -> String {
+        let home = {
+            if let Some(path) = std::env::home_dir() {
+                let path = format!("{}/.melodix/", path.display().to_string());
+
+                if let Ok(false) = std::fs::exists(&path) {
+                    std::fs::create_dir(&path).unwrap();
+                }
+
+                path
+            } else {
+                String::default()
+            }
+        };
+
+        format!("{home}{}", Self::PATH_SETTING)
+    }
+
     pub fn new(context: &CreationContext) -> Self {
-        if let Ok(file) = std::fs::read(Self::PATH_SETTING) {
+        if let Ok(file) = std::fs::read(Self::get_path()) {
             if let Ok(setting) = postcard::from_bytes::<Self>(&file) {
                 context.egui_ctx.set_zoom_factor(setting.window_scale);
 
@@ -99,6 +117,6 @@ impl Default for Setting {
 impl Drop for Setting {
     fn drop(&mut self) {
         let serialize: Vec<u8> = postcard::to_allocvec(&self).unwrap();
-        std::fs::write("setting.data", serialize).unwrap();
+        std::fs::write(Self::get_path(), serialize).unwrap();
     }
 }
