@@ -54,7 +54,8 @@ use crate::{app::*, library::*, setting::*};
 
 use eframe::{CreationContext, egui};
 use notify_rust::{Image, Notification};
-use rodio::{OutputStream, OutputStreamHandle, Sink};
+use raw_window_handle::HasWindowHandle;
+use rodio::{OutputStream, Sink};
 use souvlaki::{MediaControlEvent, MediaControls, PlatformConfig};
 use std::sync::mpsc::{Receiver, Sender};
 use tray_icon::{
@@ -64,18 +65,23 @@ use tray_icon::{
 
 //================================================================
 
+enum UserEvent {
+    TrayIconEvent(tray_icon::TrayIconEvent),
+    MenuEvent(tray_icon::menu::MenuEvent),
+}
+
 #[allow(dead_code)]
 pub struct System {
     /// media sink, for audio play-back.
     pub sink: Sink,
     /// multi-media key event handler.
     pub media: Option<(MediaControls, Receiver<MediaControlEvent>)>,
-    /// push notification event handler.
+    /// push event handler.
     push: Option<(Sender<String>, Receiver<String>)>,
+    /// tray event handler.
+    tray: Option<Receiver<MenuEvent>>,
     /// media sink stream and handle.
     stream: OutputStream,
-    /// media sink stream and handle.
-    handle: OutputStreamHandle,
 }
 
 impl System {
@@ -87,78 +93,136 @@ impl System {
     const PUSH_COMMAND_SKIP_A: &str = "skip_a";
     const PUSH_COMMAND_SKIP_B: &str = "skip_b";
 
+    fn create_tray() {
+        let tray_menu = tray_icon::menu::Menu::with_items(&[
+            &MenuItemBuilder::new()
+                .text("Play/Pause")
+                .enabled(true)
+                .build(),
+            &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
+            &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
+            &MenuItemBuilder::new().text("Exit").enabled(true).build(),
+        ])
+        .expect("System::new(): Couldn't create tray menu.");
+
+        let image = image::load_from_memory(Self::TRAY_ICON)
+            .expect("System::new(): Couldn't load tray icon image.")
+            .into_bytes();
+        let _tray = TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_icon(
+                tray_icon::Icon::from_rgba(image, 32, 32)
+                    .expect("System::new(): Couldn't use tray icon image."),
+            )
+            .build()
+            .expect("System::new(): Couldn't create tray icon.");
+    }
+
     pub fn new(setting: &Setting, context: &CreationContext) -> anyhow::Result<Self> {
-        let (stream, handle) = rodio::OutputStream::try_default()?;
-        let sink = rodio::Sink::try_new(&handle)?;
+        let stream = rodio::OutputStreamBuilder::open_default_stream()?;
+        let sink = rodio::Sink::connect_new(stream.mixer());
+
+        #[cfg(target_os = "linux")]
+        let hwnd = None;
+
+        #[cfg(not(target_os = "linux"))]
+        let hwnd = {
+            let mut handle = context.window_handle()?;
+
+            let handle_pointer: *mut std::ffi::c_void =
+                &mut handle as *mut _ as *mut std::ffi::c_void;
+            Some(handle_pointer)
+        };
 
         let config = PlatformConfig {
             dbus_name: "melodix",
             display_name: "Melodix",
-            hwnd: None,
+            hwnd,
         };
 
-        let media = {
-            if setting.window_media {
-                let mut media = MediaControls::new(config)?;
+        let media = if setting.window_media {
+            let mut media = MediaControls::new(config)?;
 
-                let clone = context.egui_ctx.clone();
-                let (event_tx, media_rx) = std::sync::mpsc::channel();
+            let clone = context.egui_ctx.clone();
+            let (event_tx, media_rx) = std::sync::mpsc::channel();
 
-                media.attach(move |event: MediaControlEvent| {
-                    clone.request_repaint();
-                    event_tx
-                        .send(event)
-                        .expect("System::new(): Couldn't send media event.");
-                })?;
+            media.attach(move |event: MediaControlEvent| {
+                clone.request_repaint();
+                event_tx
+                    .send(event)
+                    .expect("System::new(): Couldn't send media event.");
+            })?;
 
-                Some((media, media_rx))
-            } else {
-                None
-            }
+            Some((media, media_rx))
+        } else {
+            None
         };
 
-        if setting.window_tray {
-            std::thread::spawn(|| {
-                gtk::init().expect("System::new(): Couldn't create GTK instance.");
+        let tray = if setting.window_tray {
+            #[cfg(target_os = "linux")]
+            {
+                std::thread::spawn(|| {
+                    gtk::init().expect("System::new(): Couldn't create GTK instance.");
 
-                let tray_menu = tray_icon::menu::Menu::with_items(&[
-                    &MenuItemBuilder::new().text("Play").enabled(true).build(),
-                    &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
-                    &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
-                    &MenuItemBuilder::new().text("Exit").enabled(true).build(),
-                ])
-                .expect("System::new(): Couldn't create tray menu.");
+                    let tray_menu = tray_icon::menu::Menu::with_items(&[
+                        &MenuItemBuilder::new()
+                            .text("Play/Pause")
+                            .enabled(true)
+                            .build(),
+                        &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
+                        &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
+                        &MenuItemBuilder::new().text("Exit").enabled(true).build(),
+                    ])
+                    .expect("System::new(): Couldn't create tray menu.");
 
-                let image = image::load_from_memory(Self::TRAY_ICON)
-                    .expect("System::new(): Couldn't load tray icon image.")
-                    .into_bytes();
-                let _tray = TrayIconBuilder::new()
-                    .with_menu(Box::new(tray_menu))
-                    .with_icon(
-                        tray_icon::Icon::from_rgba(image, 32, 32)
-                            .expect("System::new(): Couldn't use tray icon image."),
-                    )
-                    .build()
-                    .expect("System::new(): Couldn't create tray icon.");
+                    let image = image::load_from_memory(Self::TRAY_ICON)
+                        .expect("System::new(): Couldn't load tray icon image.")
+                        .into_bytes();
+                    let _tray = TrayIconBuilder::new()
+                        .with_menu(Box::new(tray_menu))
+                        .with_icon(
+                            tray_icon::Icon::from_rgba(image, 32, 32)
+                                .expect("System::new(): Couldn't use tray icon image."),
+                        )
+                        .build()
+                        .expect("System::new(): Couldn't create tray icon.");
 
-                gtk::main();
-            });
-        }
+                    println!("Create tray icon.");
 
-        let push = {
-            if setting.window_push {
-                Some(std::sync::mpsc::channel())
-            } else {
-                None
+                    gtk::main();
+                });
             }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                Self::create_tray();
+            }
+
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            let clone = context.egui_ctx.clone();
+            tray_icon::menu::MenuEvent::set_event_handler(Some(move |event| {
+                tx.send(event).unwrap();
+                clone.request_repaint();
+            }));
+
+            Some(rx)
+        } else {
+            None
+        };
+
+        let push = if setting.window_push {
+            Some(std::sync::mpsc::channel())
+        } else {
+            None
         };
 
         Ok(Self {
             sink,
             stream,
-            handle,
             media,
             push,
+            tray,
         })
     }
 
@@ -170,23 +234,25 @@ impl System {
             }
         }
 
-        // if tray notification event handler is present, try reading event.
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            match event.id.0.as_str() {
-                Self::TRAY_COMMAND_TOGGLE => return Some(MediaControlEvent::Toggle),
-                Self::TRAY_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
-                Self::TRAY_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
-                Self::TRAY_COMMAND_EXIT => return Some(MediaControlEvent::Quit),
-                _ => return None,
+        // if push notification event handler is present, try reading event.
+        if let Some((_, push_rx)) = self.push.as_ref() {
+            if let Ok(event) = push_rx.try_recv() {
+                match event.as_str() {
+                    Self::PUSH_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
+                    Self::PUSH_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
+                    _ => return None,
+                }
             }
         }
 
-        // if push notification event handler is present, try reading event.
-        if let Some((_, push_rx)) = self.push.as_ref() {
-            if let Ok(click) = push_rx.try_recv() {
-                match click.as_str() {
-                    Self::PUSH_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
-                    Self::PUSH_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
+        // if tray notification event handler is present, try reading event.
+        if let Some(tray_rx) = self.tray.as_ref() {
+            if let Ok(event) = tray_rx.try_recv() {
+                match event.id.0.as_str() {
+                    Self::TRAY_COMMAND_TOGGLE => return Some(MediaControlEvent::Toggle),
+                    Self::TRAY_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
+                    Self::TRAY_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
+                    Self::TRAY_COMMAND_EXIT => return Some(MediaControlEvent::Quit),
                     _ => return None,
                 }
             }

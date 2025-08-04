@@ -31,8 +31,8 @@ anyhow      = { version = "1.0.98" }
 # audio play-back/meta-data.
 #================================================================
 # audio play-back.
-rodio        = { version = "0.20.1", features = ["flac", "minimp3", "vorbis", "wav"] , default-features = false }
-# MP3 duration, due to minimp3 never being able to retrieve it, and symphonia failing ocasionally to do so.
+rodio        = { version = "0.21.1" }
+# MP3 duration, due to symphonia failing ocasionally to retrieve the duration.
 mp3-duration = { version = "0.1.10" }
 # audio meta-data.
 symphonia    = { version = "0.5.4",  features = ["all", "opt-simd"] }
@@ -44,7 +44,6 @@ symphonia    = { version = "0.5.4",  features = ["all", "opt-simd"] }
 notify-rust = { version = "4.11.7", features = ["images"] }
 # tray icon.
 tray-icon   = { version = "0.20.1" }
-gtk         = { version = "0.18.2" }
 # multi-media key event.
 souvlaki    = { version = "0.8.2" }
 # folder picker.
@@ -54,3 +53,7 @@ walkdir     = { version = "2" }
 # play-list random picker and writer/reader.
 rand        = { version = "0.9.1" }
 m3u         = { version = "1.0.0" }
+raw-window-handle = "0.6.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk         = { version = "0.18.2" }
