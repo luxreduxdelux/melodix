@@ -53,8 +53,16 @@ use crate::{app::*, library::*, setting::*};
 //================================================================
 
 use eframe::{CreationContext, egui};
+
+#[cfg(target_os = "linux")]
 use notify_rust::{Image, Notification};
+
+#[cfg(not(target_os = "linux"))]
+use notify_rust::Notification;
+
+#[cfg(not(target_os = "linux"))]
 use raw_window_handle::HasWindowHandle;
+
 use rodio::{OutputStream, Sink};
 use souvlaki::{MediaControlEvent, MediaControls, PlatformConfig};
 use std::sync::mpsc::{Receiver, Sender};
@@ -64,11 +72,6 @@ use tray_icon::{
 };
 
 //================================================================
-
-enum UserEvent {
-    TrayIconEvent(tray_icon::TrayIconEvent),
-    MenuEvent(tray_icon::menu::MenuEvent),
-}
 
 #[allow(dead_code)]
 pub struct System {
@@ -93,31 +96,6 @@ impl System {
     const PUSH_COMMAND_SKIP_A: &str = "skip_a";
     const PUSH_COMMAND_SKIP_B: &str = "skip_b";
 
-    fn create_tray() {
-        let tray_menu = tray_icon::menu::Menu::with_items(&[
-            &MenuItemBuilder::new()
-                .text("Play/Pause")
-                .enabled(true)
-                .build(),
-            &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
-            &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
-            &MenuItemBuilder::new().text("Exit").enabled(true).build(),
-        ])
-        .expect("System::new(): Couldn't create tray menu.");
-
-        let image = image::load_from_memory(Self::TRAY_ICON)
-            .expect("System::new(): Couldn't load tray icon image.")
-            .into_bytes();
-        let _tray = TrayIconBuilder::new()
-            .with_menu(Box::new(tray_menu))
-            .with_icon(
-                tray_icon::Icon::from_rgba(image, 32, 32)
-                    .expect("System::new(): Couldn't use tray icon image."),
-            )
-            .build()
-            .expect("System::new(): Couldn't create tray icon.");
-    }
-
     pub fn new(setting: &Setting, context: &CreationContext) -> anyhow::Result<Self> {
         let stream = rodio::OutputStreamBuilder::open_default_stream()?;
         let sink = rodio::Sink::connect_new(stream.mixer());
@@ -141,6 +119,8 @@ impl System {
         };
 
         let media = if setting.window_media {
+            // TO-DO different MC::new() result on Windows for some reason?
+            /*
             let mut media = MediaControls::new(config)?;
 
             let clone = context.egui_ctx.clone();
@@ -152,8 +132,10 @@ impl System {
                     .send(event)
                     .expect("System::new(): Couldn't send media event.");
             })?;
-
             Some((media, media_rx))
+            */
+
+            None
         } else {
             None
         };
@@ -187,15 +169,34 @@ impl System {
                         .build()
                         .expect("System::new(): Couldn't create tray icon.");
 
-                    println!("Create tray icon.");
-
                     gtk::main();
                 });
             }
 
             #[cfg(not(target_os = "linux"))]
             {
-                Self::create_tray();
+                let tray_menu = tray_icon::menu::Menu::with_items(&[
+                    &MenuItemBuilder::new()
+                        .text("Play/Pause")
+                        .enabled(true)
+                        .build(),
+                    &MenuItemBuilder::new().text("Skip -").enabled(true).build(),
+                    &MenuItemBuilder::new().text("Skip +").enabled(true).build(),
+                    &MenuItemBuilder::new().text("Exit").enabled(true).build(),
+                ])
+                .expect("System::new(): Couldn't create tray menu.");
+
+                let image = image::load_from_memory(Self::TRAY_ICON)
+                    .expect("System::new(): Couldn't load tray icon image.")
+                    .into_bytes();
+                let _tray = TrayIconBuilder::new()
+                    .with_menu(Box::new(tray_menu))
+                    .with_icon(
+                        tray_icon::Icon::from_rgba(image, 32, 32)
+                            .expect("System::new(): Couldn't use tray icon image."),
+                    )
+                    .build()
+                    .expect("System::new(): Couldn't create tray icon.");
             }
 
             let (tx, rx) = std::sync::mpsc::channel();
@@ -228,33 +229,33 @@ impl System {
 
     pub fn poll_event(&mut self) -> Option<MediaControlEvent> {
         // if multi-media key event handler is present, try reading event.
-        if let Some((_, media_rx)) = self.media.as_ref() {
-            if let Ok(event) = media_rx.try_recv() {
-                return Some(event);
-            }
+        if let Some((_, media_rx)) = self.media.as_ref()
+            && let Ok(event) = media_rx.try_recv()
+        {
+            return Some(event);
         }
 
         // if push notification event handler is present, try reading event.
-        if let Some((_, push_rx)) = self.push.as_ref() {
-            if let Ok(event) = push_rx.try_recv() {
-                match event.as_str() {
-                    Self::PUSH_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
-                    Self::PUSH_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
-                    _ => return None,
-                }
+        if let Some((_, push_rx)) = self.push.as_ref()
+            && let Ok(event) = push_rx.try_recv()
+        {
+            match event.as_str() {
+                Self::PUSH_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
+                Self::PUSH_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
+                _ => return None,
             }
         }
 
         // if tray notification event handler is present, try reading event.
-        if let Some(tray_rx) = self.tray.as_ref() {
-            if let Ok(event) = tray_rx.try_recv() {
-                match event.id.0.as_str() {
-                    Self::TRAY_COMMAND_TOGGLE => return Some(MediaControlEvent::Toggle),
-                    Self::TRAY_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
-                    Self::TRAY_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
-                    Self::TRAY_COMMAND_EXIT => return Some(MediaControlEvent::Quit),
-                    _ => return None,
-                }
+        if let Some(tray_rx) = self.tray.as_ref()
+            && let Ok(event) = tray_rx.try_recv()
+        {
+            match event.id.0.as_str() {
+                Self::TRAY_COMMAND_TOGGLE => return Some(MediaControlEvent::Toggle),
+                Self::TRAY_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
+                Self::TRAY_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
+                Self::TRAY_COMMAND_EXIT => return Some(MediaControlEvent::Quit),
+                _ => return None,
             }
         }
 
@@ -273,7 +274,7 @@ impl System {
             MediaControlEvent::Toggle               => app.track_toggle(),
             MediaControlEvent::Next                 => app.track_skip_b(context)?,
             MediaControlEvent::Previous             => app.track_skip_a(context)?,
-            MediaControlEvent::Stop                 => app.track_stop(),
+            MediaControlEvent::Stop                 => app.track_stop(true),
             MediaControlEvent::Seek(seek_direction) => match seek_direction {
                 souvlaki::SeekDirection::Forward  => app.track_seek( 10, true),
                 souvlaki::SeekDirection::Backward => app.track_seek(-10, true),
@@ -315,23 +316,27 @@ impl System {
 
             let mut use_icon = false;
 
-            // if the current track has an icon and dimension for the icon...
-            if let Some(icon) = &state.2.icon.0 && let Some(size) = state.2.icon.1 {
-                // try loading the icon, either as an RGBA or RGB image.
-                let icon = {
-                    if let Ok(icon) = Image::from_rgba(size.0 as i32, size.1 as i32, icon.to_vec()) {
-                        Some(icon)
-                    } else if let Ok(icon) = Image::from_rgb(size.0 as i32, size.1 as i32, icon.to_vec()) {
-                        Some(icon)
-                    } else {
-                        None
-                    }
-                };
+            #[cfg(target_os = "linux")]
+            {
+                // if the current track has an icon and dimension for the icon...
+                if let Some(icon) = &state.2.icon.0 && let Some(size) = state.2.icon.1 {
+                    // try loading the icon, either as an RGBA or RGB image.
+                    let icon = {
 
-                // if we could load the icon, set it as the notification icon.
-                if let Some(icon) = icon {
-                    use_icon = true;
-                    notification.image_data(icon);
+                        if let Ok(icon) = Image::from_rgba(size.0 as i32, size.1 as i32, icon.to_vec()) {
+                            Some(icon)
+                        } else if let Ok(icon) = Image::from_rgb(size.0 as i32, size.1 as i32, icon.to_vec()) {
+                            Some(icon)
+                        } else {
+                            None
+                        }
+                    };
+
+                    // if we could load the icon, set it as the notification icon.
+                    if let Some(icon) = icon {
+                        use_icon = true;
+                        notification.image_data(icon);
+                    }
                 }
             }
 
@@ -347,6 +352,7 @@ impl System {
 
             let notification = notification.show()?;
 
+            #[cfg(target_os = "linux")]
             // send notification, await action from user.
             std::thread::spawn(move || {
                 notification.wait_for_action(move |action| {

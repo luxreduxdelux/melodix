@@ -16,7 +16,18 @@
       "type": "Script",
       "name": "",
       "script": "./compile.sh",
-      "layout": [],
+      "layout": [
+        {
+          "kind": "Boolean",
+          "name": "BUILD_LINUX",
+          "data": true
+        },
+        {
+          "kind": "Boolean",
+          "name": "BUILD_WINDOWS",
+          "data": false
+        }
+      ],
       "enable": true
     }
   ],
@@ -26,7 +37,7 @@
       "name": "",
       "file": "{name}_{version}",
       "binary": "../target/release/melodix",
-      "script": null,
+      "script": "",
       "enable": false
     },
     {
@@ -34,17 +45,28 @@
       "name": "",
       "file": "{name}_{version}",
       "binary": "../target/release/melodix",
-      "script_prior": null,
-      "script_after": null,
+      "script_prior": "",
+      "script_after": "",
       "architecture": "amd64",
-      "enable": false
+      "enable": true
     },
     {
       "type": "Script",
       "name": "",
       "script": "./package.sh",
-      "layout": [],
-      "enable": true
+      "layout": [
+        {
+          "kind": "Boolean",
+          "name": "PACKAGE_LINUX",
+          "data": true
+        },
+        {
+          "kind": "Boolean",
+          "name": "PACKAGE_WINDOWS",
+          "data": false
+        }
+      ],
+      "enable": false
     }
   ]
 }

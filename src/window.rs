@@ -62,18 +62,25 @@ use rand::seq::{IndexedRandom, SliceRandom};
 pub struct Window {
     /// currently active layout (library, queue, etc.)
     pub layout: Layout,
-    /// repeat state; do we repeat the current track?
+    /// repeat track.
     pub repeat: bool,
-    /// random state; do we randomize the current track?
+    /// randomize queue.
     pub random: bool,
+    /// search state, for group, album, track.
     pub search: (String, String, String),
+    /// select state, for group, album, track.
+    /// index .0 is for the group/album/track index.
+    /// index .1 is for the layout index (for adding a highlight to an entry in the window).
     pub select: (
         (Option<usize>, Option<usize>),
         (Option<usize>, Option<usize>),
         (Option<usize>, Option<usize>),
     ),
+    /// play state, for group, album, track.
     pub state: Option<(usize, usize, usize)>,
+    /// queue state, for group, album, track, and queue index.
     pub queue: (Vec<(usize, usize, usize)>, usize),
+    /// toast notification list.
     pub toast: Toasts,
 }
 
@@ -127,8 +134,6 @@ impl Window {
     }
 
     pub fn draw(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
-        context.request_repaint_after_secs(1.0);
-
         Self::handle_track(app, context)?;
 
         app.window.toast.show(context);
@@ -141,7 +146,6 @@ impl Window {
             Layout::About => Self::draw_about(app, context),
         }
 
-        // remove later
         Ok(())
     }
 
@@ -257,7 +261,7 @@ impl Window {
                                     }
 
                                     if let Some(first) = app.window.queue.0.first() {
-                                        app.track_add(*first, context);
+                                        App::error_result(app.track_add(*first, context));
                                     }
                                 },
                                 _ => {}
@@ -393,27 +397,25 @@ impl Window {
         Self::draw_panel_layout(app, context);
 
         egui::CentralPanel::default().show(context, |ui| {
-            if ui.button("Scan Folder").clicked() {
+            if ui.button("Scan Library Folder").clicked() {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                     app.library = Library::scan(&folder.as_path().display().to_string());
                     app.window.layout = Layout::Library;
                 }
             }
 
-            if ui.button("Dump Sample Lua Plug-In").clicked() {
-                if !std::fs::exists("script").unwrap() {
-                    std::fs::create_dir("script").unwrap();
-                }
+            if ui.button("Open Script Folder").clicked() {
+                let _ = opener::open(Script::get_path());
+            }
 
-                let main = std::fs::write("script/main.lua", Script::DATA_MAIN);
-                let meta = std::fs::write("script/meta.lua", Script::DATA_META);
+            if ui.button("Dump Sample Lua Plug-In").clicked() {
+                let path = Script::get_path();
+
+                let main = std::fs::write(format!("{path}/main.lua"), Script::DATA_MAIN);
+                let meta = std::fs::write(format!("{path}/meta.lua"), Script::DATA_META);
 
                 if main.is_ok() && meta.is_ok() {
-                    rfd::MessageDialog::new()
-                        .set_level(rfd::MessageLevel::Info)
-                        .set_title("Lua Plug-In")
-                        .set_description("A new script/ folder has been made in the root directory of your Melodix installation, and within it, the API documentation for Melodix as well as a sample Lua plug-in. Enable 'Allow Lua plug-in scripting' and restart Melodix for the change to take effect.")
-                        .show();
+                    let _ = opener::open(path);
                 } else {
                     rfd::MessageDialog::new()
                         .set_level(rfd::MessageLevel::Error)
@@ -642,7 +644,7 @@ impl Window {
     fn queue_reset(app: &mut App) {
         app.window.queue.0.clear();
         app.window.queue.1 = 0;
-        app.track_stop();
+        app.track_stop(false);
     }
 
     fn queue_play_group(

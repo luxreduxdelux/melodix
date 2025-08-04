@@ -5,55 +5,38 @@ edition = "2024"
 
 [profile.release]
 opt-level     = 3
+lto           = true
 codegen-units = 1
-lto           = "fat"
+panic         = "abort"
+strip         = "none"
+
+[profile.dev]
+debug = 0
 
 [dependencies]
-#================================================================
-# core.
-#================================================================
-# lua.
-mlua        = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize"] }
-# egui.
-eframe      = { version = "0.32.0"                               }
-egui-toast  = { git = "https://github.com/creativcoder/egui-toast", branch = "main" }
-egui_extras = { version = "0.32.0", features = ["file", "image", "svg"] }
-image       = { version = "0.25.6", features = ["jpeg", "png"]   }
-# serialization/deserialization.
-postcard    = { version = "1.0.0",  features = ["alloc"]  }
-serde       = { version = "1.0",    features = ["derive"] }
-# multi-thread library scan.
-rayon       = { version = "1.10" }
-# generic error converter.
-anyhow      = { version = "1.0.98" }
-
-#================================================================
-# audio play-back/meta-data.
-#================================================================
-# audio play-back.
-rodio        = { version = "0.21.1" }
-# MP3 duration, due to symphonia failing ocasionally to retrieve the duration.
-mp3-duration = { version = "0.1.10" }
-# audio meta-data.
-symphonia    = { version = "0.5.4",  features = ["all", "opt-simd"] }
-
-#================================================================
-# miscellaneous system utility.
-#================================================================
-# push notification.
-notify-rust = { version = "4.11.7", features = ["images"] }
-# tray icon.
-tray-icon   = { version = "0.20.1" }
-# multi-media key event.
-souvlaki    = { version = "0.8.2" }
-# folder picker.
-rfd         = { version = "0.15.3" }
-# recursive folder scan.
-walkdir     = { version = "2" }
-# play-list random picker and writer/reader.
-rand        = { version = "0.9.1" }
-m3u         = { version = "1.0.0" }
-raw-window-handle = "0.6.2"
+mlua              = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize"] }
+eframe            = { version = "0.32.0"                               }
+egui-toast        = { git = "https://github.com/creativcoder/egui-toast", branch = "main" }
+egui_extras       = { version = "0.32.0", features = ["file", "image", "svg"] }
+image             = { version = "0.25.6", features = ["jpeg", "png"]   }
+postcard          = { version = "1.0.0",  features = ["alloc"]  }
+serde             = { version = "1.0",    features = ["derive"] }
+rayon             = { version = "1.10" }
+anyhow            = { version = "1.0.98" }
+rodio             = { version = "0.21.1" }
+mp3-duration      = { version = "0.1.10" }
+symphonia         = { version = "0.5.4",  features = ["all", "opt-simd"] }
+notify-rust       = { version = "4.11.7", features = ["images"] }
+tray-icon         = { version = "0.20.1" }
+souvlaki          = { version = "0.8.2" }
+rfd               = { version = "0.15.3" }
+walkdir           = { version = "2" }
+rand              = { version = "0.9.1" }
+m3u               = { version = "1.0.0" }
+raw-window-handle = { version = "0.6.2" }
+opener            = { version = "0.8.2" }
+# TO-DO actually utilize this
+dirs              = { version = "6.0.0" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk         = { version = "0.18.2" }

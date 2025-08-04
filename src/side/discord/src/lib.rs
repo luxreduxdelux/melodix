@@ -168,15 +168,15 @@ impl Discord {
             .release(&album)
             .build();
 
-        let mut setting = setting.lock().unwrap();
-        let cache = &mut setting.cache;
-
         if let Ok(search) = Release::search(query).execute_with_client(&m_client) {
             for release in search.entities {
                 if let Ok(fetch) = release.get_coverart().execute_with_client(&m_client) {
                     match fetch {
                         CoverartResponse::Json(cover) => {
                             if let Some(cover) = cover.images.first() {
+                                let mut setting = setting.lock().unwrap();
+                                let cache = &mut setting.cache;
+
                                 cache.insert(
                                     (group.clone(), album.clone()),
                                     CacheEntry::Path(cover.image.clone()),
@@ -194,6 +194,9 @@ impl Discord {
                             }
                         }
                         CoverartResponse::Url(cover) => {
+                            let mut setting = setting.lock().unwrap();
+                            let cache = &mut setting.cache;
+
                             cache.insert(
                                 (group.clone(), album.clone()),
                                 CacheEntry::Path(cover.clone()),
@@ -212,6 +215,9 @@ impl Discord {
                     }
                 }
             }
+
+            let mut setting = setting.lock().unwrap();
+            let cache = &mut setting.cache;
 
             cache.insert((group.clone(), album.clone()), CacheEntry::Null);
             Self::apply_state(d_client, group, album, track, None, time_a, time_b);
@@ -342,11 +348,29 @@ struct Setting {
 
 impl Setting {
     const PATH_DATA: &'static str = "script/discord.data";
+
+    fn get_path() -> String {
+        let home = {
+            if let Some(path) = std::env::home_dir() {
+                let path = format!("{}/.melodix/", path.display());
+
+                if let Ok(false) = std::fs::exists(&path) {
+                    std::fs::create_dir(&path).unwrap();
+                }
+
+                path
+            } else {
+                String::default()
+            }
+        };
+
+        format!("{home}{}", Self::PATH_DATA)
+    }
 }
 
 impl Default for Setting {
     fn default() -> Self {
-        if let Ok(file) = std::fs::read(Self::PATH_DATA) {
+        if let Ok(file) = std::fs::read(Self::get_path()) {
             postcard::from_bytes(&file).unwrap_or(Self {
                 cache: HashMap::default(),
                 cover: true,
@@ -364,7 +388,7 @@ impl Drop for Setting {
     fn drop(&mut self) {
         let serialize: Vec<u8> =
             postcard::to_allocvec(&*self).expect("MelodixDiscord: Could not write setting data.");
-        std::fs::write(Self::PATH_DATA, serialize)
+        std::fs::write(Self::get_path(), serialize)
             .expect("MelodixDiscord: Could not write setting data.");
     }
 }

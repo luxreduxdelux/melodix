@@ -1,7 +1,11 @@
 #!/bin/bash
 
-# create Linux binary.
-cargo build --release
+if [ $BUILD_LINUX -eq 1 ]; then
+    # create Linux binary.
+    cargo build --release
+fi
 
-# create Windows binary.
-cargo build --release --target x86_64-pc-windows-gnu
+if [ $BUILD_WINDOWS -eq 1 ]; then
+    # create Windows binary.
+    cargo build --release --target x86_64-pc-windows-gnu
+fi
