@@ -137,7 +137,7 @@ impl App {
         let clone = context.clone();
         self.system
             .sink
-            .append(rodio::source::EmptyCallback::<f32>::new(Box::new(
+            .append(rodio::source::EmptyCallback::new(Box::new(
                 move || {
                     clone.request_repaint();
                 },

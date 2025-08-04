@@ -51,10 +51,16 @@
 use discord_presence::Client;
 use mlua::prelude::*;
 use musicbrainz_rs::{
-    client::MusicBrainzClient, entity::CoverartResponse, entity::release::*, prelude::*,
+    client::MusicBrainzClient,
+    entity::{CoverartResponse, release::*},
+    prelude::*,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc, sync::Mutex, time::UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::UNIX_EPOCH,
+};
 
 //================================================================
 
@@ -68,6 +74,7 @@ struct Discord {
 impl Discord {
     const USER_AGENT: &'static str =
         "MelodixDiscord/1.0.0 (https://github.com/luxreduxdelux/melodix)";
+    const DISCORD_APP: u64 = 1385408557796687923;
 
     fn new() -> mlua::Result<Self> {
         let mut brainz_client = MusicBrainzClient::default();
@@ -79,7 +86,7 @@ impl Discord {
 
         //================================================================
 
-        let mut status_client = Client::new(1385408557796687923);
+        let mut status_client = Client::new(Self::DISCORD_APP);
         status_client.start();
 
         let connect = Arc::new(Mutex::new(false));
@@ -128,11 +135,8 @@ impl Discord {
                         ._type(discord_presence::models::ActivityType::Listening)
                         .timestamps(|f| f.start(time_a).end(time_b))
                         .assets(|f| {
-                            if let Some(image) = image {
-                                f.small_text(album).small_image(image)
-                            } else {
-                                f.small_text(album)
-                            }
+                            f.small_text(album)
+                                .small_image(image.unwrap_or("icon".to_string()))
                         })
                 })
                 .expect("MelodixDiscord: Could not apply Discord state.");

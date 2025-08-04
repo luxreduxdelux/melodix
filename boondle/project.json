@@ -15,7 +15,7 @@
     {
       "type": "Script",
       "name": "",
-      "script": "compile.sh",
+      "script": "./compile.sh",
       "layout": [],
       "enable": true
     }
@@ -27,7 +27,7 @@
       "file": "{name}_{version}",
       "binary": "../target/release/melodix",
       "script": null,
-      "enable": true
+      "enable": false
     },
     {
       "type": "Debian",
@@ -37,12 +37,12 @@
       "script_prior": null,
       "script_after": null,
       "architecture": "amd64",
-      "enable": true
+      "enable": false
     },
     {
       "type": "Script",
       "name": "",
-      "script": "package.sh",
+      "script": "./package.sh",
       "layout": [],
       "enable": true
     }

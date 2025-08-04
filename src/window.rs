@@ -52,7 +52,7 @@ use crate::{app::*, library::*, script::*};
 
 //================================================================
 
-use eframe::egui::{self, Color32, Slider, TextureOptions, Vec2};
+use eframe::egui::{self, Color32, Popup, Slider, TextureOptions, Vec2};
 use egui_extras::{Column, TableBuilder};
 use egui_toast::Toasts;
 use rand::seq::{IndexedRandom, SliceRandom};
@@ -62,8 +62,8 @@ use rand::seq::{IndexedRandom, SliceRandom};
 pub struct Window {
     /// currently active layout (library, queue, etc.)
     pub layout: Layout,
-    /// replay state; do we replay the current track?
-    pub replay: bool,
+    /// repeat state; do we repeat the current track?
+    pub repeat: bool,
     /// random state; do we randomize the current track?
     pub random: bool,
     pub search: (String, String, String),
@@ -87,20 +87,20 @@ pub enum Layout {
 }
 
 impl Window {
-    const IMAGE_SKIP_A: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_a.png");
+    const IMAGE_SKIP_A: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_a.svg");
     const IMAGE_SKIP_B: eframe::egui::ImageSource<'_> = egui::include_image!("../data/skip_b.svg");
-    const IMAGE_PLAY: eframe::egui::ImageSource<'_> = egui::include_image!("../data/play.png");
-    const IMAGE_PAUSE: eframe::egui::ImageSource<'_> = egui::include_image!("../data/pause.png");
-    const IMAGE_REPLAY: eframe::egui::ImageSource<'_> = egui::include_image!("../data/replay.png");
-    const IMAGE_RANDOM: eframe::egui::ImageSource<'_> = egui::include_image!("../data/random.png");
+    const IMAGE_PLAY: eframe::egui::ImageSource<'_> = egui::include_image!("../data/play.svg");
+    const IMAGE_PAUSE: eframe::egui::ImageSource<'_> = egui::include_image!("../data/pause.svg");
+    const IMAGE_REPEAT: eframe::egui::ImageSource<'_> = egui::include_image!("../data/repeat.svg");
+    const IMAGE_RANDOM: eframe::egui::ImageSource<'_> = egui::include_image!("../data/random.svg");
     const IMAGE_VOLUME_A: eframe::egui::ImageSource<'_> =
-        egui::include_image!("../data/volume_a.png");
+        egui::include_image!("../data/volume_a.svg");
     const IMAGE_VOLUME_B: eframe::egui::ImageSource<'_> =
-        egui::include_image!("../data/volume_b.png");
+        egui::include_image!("../data/volume_b.svg");
     const IMAGE_VOLUME_C: eframe::egui::ImageSource<'_> =
-        egui::include_image!("../data/volume_c.png");
+        egui::include_image!("../data/volume_c.svg");
     const IMAGE_VOLUME_D: eframe::egui::ImageSource<'_> =
-        egui::include_image!("../data/volume_d.png");
+        egui::include_image!("../data/volume_d.svg");
     const IMAGE_LOGO: eframe::egui::ImageSource<'_> = egui::include_image!("../data/logo.png");
 
     //================================================================
@@ -114,7 +114,7 @@ impl Window {
             } else {
                 Layout::Library
             },
-            replay: false,
+            repeat: false,
             random: false,
             search: (String::default(), String::default(), String::default()),
             select: ((None, None), (None, None), (None, None)),
@@ -129,27 +129,7 @@ impl Window {
     pub fn draw(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
         context.request_repaint_after_secs(1.0);
 
-        if app.system.sink.empty()
-            && let Some(active) = app.window.state
-        {
-            if app.window.replay {
-                app.track_add(active, context)?;
-            } else if app.window.random {
-                if app.window.queue.0.len() > 1 {
-                    let mut random: Vec<usize> = (0..app.window.queue.0.len()).collect();
-                    let mut picker = rand::rng();
-                    random.shuffle(&mut picker);
-
-                    let track = random.choose(&mut picker).unwrap();
-
-                    app.window.queue.1 = *track;
-                    app.track_add(*app.window.queue.0.get(*track).unwrap(), context)?;
-                }
-            } else if let Some(track) = app.window.queue.0.get(app.window.queue.1 + 1) {
-                app.window.queue.1 += 1;
-                app.track_add(*track, context)?;
-            }
-        }
+        Self::handle_track(app, context)?;
 
         app.window.toast.show(context);
 
@@ -169,12 +149,38 @@ impl Window {
     // utility.
     //================================================================
 
+    fn handle_track(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
+        if app.system.sink.empty()
+            && let Some(active) = app.window.state
+        {
+            if app.window.repeat {
+                app.track_add(active, context)?;
+            } else if app.window.random {
+                if app.window.queue.0.len() > 1 {
+                    let mut random: Vec<usize> = (0..app.window.queue.0.len()).collect();
+                    let mut picker = rand::rng();
+                    random.shuffle(&mut picker);
+
+                    let track = random.choose(&mut picker).unwrap();
+
+                    app.window.queue.1 = *track;
+                    app.track_add(*app.window.queue.0.get(*track).unwrap(), context)?;
+                }
+            } else if let Some(track) = app.window.queue.0.get(app.window.queue.1 + 1) {
+                app.window.queue.1 += 1;
+                app.track_add(*track, context)?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn draw_button_image(
         ui: &mut egui::Ui,
         image: egui::ImageSource,
         select: bool,
         invert: bool,
-    ) -> bool {
+    ) -> egui::Response {
         ui.add(
             egui::Button::image(
                 egui::Image::new(image)
@@ -187,7 +193,6 @@ impl Window {
             )
             .selected(select),
         )
-        .clicked()
     }
 
     // draw the top track status bar. hidden if no track is available.
@@ -301,7 +306,7 @@ impl Window {
                     row.response().context_menu(|ui| {
                         if ui.button("Remove from queue").clicked() {
                             detach = Some((index, index == app.window.queue.1));
-                            ui.close_menu();
+                            ui.close();
                         }
 
                         for script in &mut app.script.script_list {
@@ -486,7 +491,9 @@ impl Window {
                             Self::IMAGE_SKIP_A,
                             false,
                             app.setting.window_theme,
-                        ) {
+                        )
+                        .clicked()
+                        {
                             App::error_result(app.track_skip_a(context));
                         }
 
@@ -496,7 +503,9 @@ impl Window {
                             Self::IMAGE_PAUSE
                         };
 
-                        if Self::draw_button_image(ui, image, false, app.setting.window_theme) {
+                        if Self::draw_button_image(ui, image, false, app.setting.window_theme)
+                            .clicked()
+                        {
                             app.track_toggle();
                         }
 
@@ -505,17 +514,21 @@ impl Window {
                             Self::IMAGE_SKIP_B,
                             false,
                             app.setting.window_theme,
-                        ) {
+                        )
+                        .clicked()
+                        {
                             App::error_result(app.track_skip_b(context));
                         }
 
                         if Self::draw_button_image(
                             ui,
-                            Self::IMAGE_REPLAY,
-                            app.window.replay,
+                            Self::IMAGE_REPEAT,
+                            app.window.repeat,
                             app.setting.window_theme,
-                        ) {
-                            app.window.replay = !app.window.replay;
+                        )
+                        .clicked()
+                        {
+                            app.window.repeat = !app.window.repeat;
                         }
 
                         if Self::draw_button_image(
@@ -523,7 +536,9 @@ impl Window {
                             Self::IMAGE_RANDOM,
                             app.window.random,
                             app.setting.window_theme,
-                        ) {
+                        )
+                        .clicked()
+                        {
                             app.window.random = !app.window.random;
                         }
 
@@ -534,7 +549,10 @@ impl Window {
                             _ => Self::IMAGE_VOLUME_D,
                         };
 
-                        ui.menu_image_button(image, |ui| {
+                        let response =
+                            Self::draw_button_image(ui, image, false, app.setting.window_theme);
+
+                        Popup::menu(&response).show(|ui| {
                             ui.horizontal(|ui| {
                                 let mut volume = app.system.sink.volume();
 
@@ -721,7 +739,7 @@ impl Window {
                     .header(16.0, |mut header| {
                         header.col(|ui| {
                             ui.horizontal(|ui| {
-                                ui.strong("Group");
+                                ui.strong(format!("Group ({})", app.library.list_shown.0.len()));
                                 if ui.button("⬆/⬇").clicked() {
                                     sort = true;
                                 }
@@ -822,7 +840,10 @@ impl Window {
                         .header(16.0, |mut header| {
                             header.col(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.strong("Album");
+                                    ui.strong(format!(
+                                        "Album ({})",
+                                        app.library.list_shown.1.len()
+                                    ));
                                     if ui.button("⬆/⬇").clicked() {
                                         sort = true;
                                     }
