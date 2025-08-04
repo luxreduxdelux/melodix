@@ -57,6 +57,16 @@ use std::{io::BufReader, time::Duration};
 
 //================================================================
 
+// TO-DO rename any instance of "module"/"add-on" to "plug-in"
+// TO-DO last.fm plug-in
+// TO-DO ListenBrainz plug-in
+// TO-DO select what tag data is shown on library track view (genre, year, time, etc.)
+// TO-DO allow multi-selection in group/album/track
+// TO-DO tag editor
+// TO-DO ReplayGain editor (wxMP3gain-esque front-end for ReplayGain)
+// TO-DO Soulseek client
+// TO-DO successful Discord connection call-back in Discord plug-in?
+
 pub static mut GLOBAL_APP: *mut App = std::ptr::null_mut();
 
 pub struct App {
@@ -114,6 +124,7 @@ impl App {
         track: (usize, usize, usize),
         context: &egui::Context,
     ) -> anyhow::Result<()> {
+        // TO-DO DO NOT DO THIS if the given track's cover is the same as the current track's cover. pointless.
         context.forget_all_images();
 
         // set active window track state.
@@ -137,16 +148,14 @@ impl App {
         let clone = context.clone();
         self.system
             .sink
-            .append(rodio::source::EmptyCallback::new(Box::new(
-                move || {
-                    clone.request_repaint();
-                },
-            )));
+            .append(rodio::source::EmptyCallback::new(Box::new(move || {
+                clone.request_repaint();
+            })));
 
         self.system.sink.play();
 
         self.script
-            .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
+            .call_all(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
 
         Ok(())
     }
@@ -156,12 +165,12 @@ impl App {
             self.system.sink.play();
 
             self.script
-                .call(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
+                .call_all(Script::CALL_PLAY, self.system.sink.get_pos().as_secs());
         } else {
             self.system.sink.pause();
 
             self.script
-                .call(Script::CALL_PAUSE, self.system.sink.get_pos().as_secs());
+                .call_all(Script::CALL_PAUSE, self.system.sink.get_pos().as_secs());
         }
     }
 
@@ -176,19 +185,19 @@ impl App {
 
         let _ = self.system.sink.try_seek(Duration::from_secs(seek as u64));
 
-        self.script.call(Script::CALL_SEEK, seek);
+        self.script.call_all(Script::CALL_SEEK, seek);
     }
 
     pub fn track_play(&self) {
         self.system.sink.play();
 
-        self.script.call(Script::CALL_PLAY, ());
+        self.script.call_all(Script::CALL_PLAY, ());
     }
 
     pub fn track_pause(&self) {
         self.system.sink.pause();
 
-        self.script.call(Script::CALL_PAUSE, ());
+        self.script.call_all(Script::CALL_PAUSE, ());
     }
 
     pub fn track_set_volume(&self, volume: f32) {
@@ -197,11 +206,13 @@ impl App {
         // TO-DO does there need to be a volume call-back?
     }
 
-    pub fn track_stop(&mut self) {
+    pub fn track_stop(&mut self, call_script: bool) {
         self.window.state = None;
         self.system.sink.stop();
 
-        self.script.call(Script::CALL_STOP, ());
+        if call_script {
+            self.script.call_all(Script::CALL_STOP, ());
+        }
     }
 
     pub fn track_skip_a(&mut self, context: &egui::Context) -> anyhow::Result<()> {
@@ -209,9 +220,9 @@ impl App {
             if let Some(track) = self.window.queue.0.get(self.window.queue.1 - 1) {
                 self.window.queue.1 -= 1;
                 self.track_add(*track, context)?;
-                self.script.call(Script::CALL_SKIP_A, ());
+                self.script.call_all(Script::CALL_SKIP_A, ());
             } else {
-                self.track_stop();
+                self.track_stop(false);
             }
         }
 
@@ -222,9 +233,9 @@ impl App {
         if let Some(track) = self.window.queue.0.get(self.window.queue.1 + 1) {
             self.window.queue.1 += 1;
             self.track_add(*track, context)?;
-            self.script.call(Script::CALL_SKIP_B, ());
+            self.script.call_all(Script::CALL_SKIP_B, ());
         } else {
-            self.track_stop();
+            self.track_stop(false);
         }
 
         Ok(())
@@ -256,7 +267,7 @@ impl eframe::App for App {
                 GLOBAL_APP = self as *mut App;
             }
 
-            self.script.call(Script::CALL_BEGIN, ());
+            self.script.call_all(Script::CALL_BEGIN, ());
             self.script.initialize = true;
         }
 

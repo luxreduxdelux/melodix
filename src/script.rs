@@ -48,7 +48,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use crate::{app::*, library::*, setting::*, window::*};
+use crate::{app::*, setting::*};
 
 //================================================================
 
@@ -65,23 +65,23 @@ pub enum SettingData {
     Button {
         name: String,
         info: String,
-        call: Option<String>,
+        call: String,
     },
     Toggle {
         name: String,
         info: String,
-        call: Option<String>,
+        call: String,
     },
     Slider {
         name: String,
         info: String,
         bind: (f32, f32),
-        call: Option<String>,
+        call: String,
     },
     Record {
         name: String,
         info: String,
-        call: Option<String>,
+        call: String,
     },
 }
 
@@ -92,27 +92,25 @@ impl SettingData {
         table: &mlua::Table,
         ui: &mut egui::Ui,
         member: M,
-    ) {
+    ) -> anyhow::Result<()> {
         match self {
             SettingData::Button { name, info, call } => {
                 let widget = ui.button(name);
 
                 if widget.on_hover_text(info).clicked() {
-                    if let Some(call) = call {
-                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
-                    }
+                    let call = script.get(&**call)?;
+                    Script::call(script.clone(), call, member);
                 }
             }
             SettingData::Toggle { name, info, call } => {
-                let mut data: bool = table.get("data").unwrap();
+                let mut data: bool = table.get("data")?;
                 let widget = ui.checkbox(&mut data, name);
 
                 if widget.on_hover_text(info).clicked() {
-                    table.set("data", data).unwrap();
+                    table.set("data", data)?;
 
-                    if let Some(call) = call {
-                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
-                    }
+                    let call = script.get(&**call)?;
+                    Script::call(script.clone(), call, member);
                 }
             }
             SettingData::Slider {
@@ -121,31 +119,31 @@ impl SettingData {
                 bind,
                 call,
             } => {
-                let mut data: f32 = table.get("data").unwrap();
+                let mut data: f32 = table.get("data")?;
                 let widget = ui.add(egui::Slider::new(&mut data, bind.0..=bind.1).text(name));
 
                 if widget.on_hover_text(info).drag_stopped() {
-                    table.set("data", data).unwrap();
+                    table.set("data", data)?;
 
-                    if let Some(call) = call {
-                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
-                    }
+                    let call = script.get(&**call)?;
+                    Script::call(script.clone(), call, member);
                 }
             }
             SettingData::Record { name, info, call } => {
-                let mut data: String = table.get("data").unwrap();
+                let mut data: String = table.get("data")?;
                 let widget = ui.label(name).id;
                 let widget = ui.text_edit_singleline(&mut data).labelled_by(widget);
 
                 if widget.on_hover_text(info).changed() {
-                    table.set("data", data).unwrap();
+                    table.set("data", data)?;
 
-                    if let Some(call) = call {
-                        Script::safe_call(script.clone(), script.get(&**call).unwrap(), member);
-                    }
+                    let call = script.get(&**call)?;
+                    Script::call(script.clone(), call, member);
                 }
             }
         };
+
+        Ok(())
     }
 }
 
@@ -199,10 +197,10 @@ impl Script {
     pub const CALL_SKIP_B: &'static str = "skip_b";
     pub const CALL_PAUSE: &'static str = "pause";
 
-    fn get_path() -> String {
+    pub fn get_path() -> String {
         let home = {
             if let Some(path) = std::env::home_dir() {
-                let path = format!("{}/.melodix/", path.display().to_string());
+                let path = format!("{}/.melodix/", path.display());
 
                 if let Ok(false) = std::fs::exists(&path) {
                     std::fs::create_dir(&path).unwrap();
@@ -242,8 +240,7 @@ impl Script {
         })
     }
 
-    // TO-DO rename to call, old call should be call_all
-    pub fn safe_call<M: IntoLuaMulti + Send + 'static>(
+    pub fn call<M: IntoLuaMulti + Send + 'static>(
         table: mlua::Table,
         entry: mlua::Function,
         member: M,
@@ -253,7 +250,11 @@ impl Script {
         }
     }
 
-    pub fn call<M: IntoLuaMulti + Send + Clone + 'static>(&self, entry: &'static str, member: M) {
+    pub fn call_all<M: IntoLuaMulti + Send + Clone + 'static>(
+        &self,
+        entry: &'static str,
+        member: M,
+    ) {
         for script in &self.script_list {
             if let Ok(function) = script.1.get::<mlua::Function>(entry) {
                 let table = script.1.clone();
@@ -267,6 +268,28 @@ impl Script {
     }
 
     fn set_global(lua: &Lua) -> anyhow::Result<()> {
+        let package = lua.globals().get::<mlua::Table>("package")?;
+
+        #[cfg(target_os = "linux")]
+        package.set(
+            "cpath",
+            format!(
+                "{:?};{}?.so",
+                package.get::<mlua::String>("cpath")?,
+                Script::get_path()
+            ),
+        )?;
+
+        #[cfg(not(target_os = "linux"))]
+        package.set(
+            "cpath",
+            format!(
+                "{:?};{}?.dll",
+                package.get::<mlua::String>("cpath")?,
+                Script::get_path()
+            ),
+        )?;
+
         let melodix = lua.create_table()?;
 
         melodix.set("get_library", lua.create_function(Self::get_library)?)?;
@@ -338,6 +361,6 @@ impl Script {
 
 impl Drop for Script {
     fn drop(&mut self) {
-        self.call(Self::CALL_CLOSE, ());
+        self.call_all(Self::CALL_CLOSE, ());
     }
 }

@@ -60,6 +60,10 @@ pub struct Setting {
     pub window_media: bool,
     pub window_tray: bool,
     pub window_push: bool,
+    pub window_time: bool,
+    pub window_date: bool,
+    pub window_kind: bool,
+    pub window_track: bool,
     pub script_allow: bool,
 }
 
@@ -109,6 +113,10 @@ impl Default for Setting {
             window_media: true,
             window_tray: true,
             window_push: true,
+            window_time: true,
+            window_date: true,
+            window_kind: true,
+            window_track: true,
             script_allow: true,
         }
     }

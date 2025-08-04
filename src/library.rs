@@ -50,11 +50,17 @@
 
 use rodio::Source;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io::BufReader, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::FileType,
+    io::BufReader,
+    path::Path,
+    time::{Duration, SystemTime},
+};
 use symphonia::core::{
     formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
 };
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 //================================================================
 
@@ -73,7 +79,7 @@ impl Library {
     fn get_path() -> String {
         let home = {
             if let Some(path) = std::env::home_dir() {
-                let path = format!("{}/.melodix/", path.display().to_string());
+                let path = format!("{}/.melodix/", path.display());
 
                 if let Ok(false) = std::fs::exists(&path) {
                     std::fs::create_dir(&path).unwrap();
@@ -89,70 +95,69 @@ impl Library {
     }
 
     pub fn new() -> Self {
-        if let Ok(file) = std::fs::read(Self::get_path()) {
-            if let Ok(library) = postcard::from_bytes::<Self>(&file) {
-                return Self {
-                    list_shown: (
-                        (0..library.list_group.len()).collect(),
-                        Vec::default(),
-                        Vec::default(),
-                    ),
-                    list_group: library.list_group,
-                };
-            }
+        if let Ok(file) = std::fs::read(Self::get_path())
+            && let Ok(library) = postcard::from_bytes::<Self>(&file)
+        {
+            return Self {
+                list_shown: (
+                    (0..library.list_group.len()).collect(),
+                    Vec::default(),
+                    Vec::default(),
+                ),
+                list_group: library.list_group,
+            };
         }
 
         Self::default()
     }
 
     pub fn scan(path: &str) -> Self {
-        let path: Vec<walkdir::DirEntry> =
-            WalkDir::new(path).into_iter().map(|x| x.unwrap()).collect();
+        let path: Vec<walkdir::DirEntry> = WalkDir::new(path)
+            .into_iter()
+            .filter_map(|x| {
+                let x = x.expect("Library::scan(): Couldn't obtain directory entry.");
+
+                if x.file_type().is_file() {
+                    if let Some(extension) = x.path().extension()
+                        // in the interest of speed, just check for extension rather than an actual file type check.
+                        && (extension == "mp3" || extension == "flac" || extension == "wav")
+                    {
+                        Some(x)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut track_list: Vec<(String, String, Track)> =
+            path.par_iter().filter_map(Track::new).collect();
+
+        track_list.par_sort_by(|(_, a_album, a_track), (_, b_album, b_track)| {
+            let a_track = a_track.track.unwrap_or_default();
+            let b_track = b_track.track.unwrap_or_default();
+
+            a_album.cmp(b_album).then(a_track.cmp(&b_track))
+        });
 
         let mut map_group: HashMap<String, Group> = HashMap::default();
 
-        let track_list: Vec<(Option<String>, Option<String>, Track)> = path
-            .par_iter()
-            .filter_map(|entry| Track::new(entry.path().to_str().unwrap()))
-            .collect();
-
         for (group, album, track) in track_list {
             let group = {
-                if let Some(group) = group {
-                    map_group.entry(group.clone()).or_insert(Group {
-                        name: group,
-                        list_album: vec![],
-                    })
-                } else {
-                    map_group
-                        .entry("< Unknown Group >".to_string())
-                        .or_insert(Group {
-                            name: "< Unknown Group >".to_string(),
-                            list_album: vec![],
-                        })
-                }
+                map_group.entry(group.clone()).or_insert(Group {
+                    name: group,
+                    list_album: vec![],
+                })
             };
-
-            let album = album.unwrap_or("< Unknown Album >".to_string());
 
             group.insert_track(&album, track);
         }
 
-        let mut list_group: Vec<Group> = map_group.values().cloned().collect();
+        let mut list_group: Vec<Group> = map_group.into_values().collect();
 
-        list_group.sort_by(|a, b| a.name.cmp(&b.name));
-
-        for group in &mut list_group {
-            group.list_album.sort_by(|a, b| a.name.cmp(&b.name));
-
-            for album in &mut group.list_album {
-                album.list_track.sort_by(|a, b| {
-                    a.track
-                        .unwrap_or_default()
-                        .cmp(&b.track.unwrap_or_default())
-                });
-            }
-        }
+        list_group.par_sort_by(|a, b| a.name.cmp(&b.name));
 
         let library = Self {
             list_shown: (
@@ -183,32 +188,32 @@ impl Group {
         let path = Path::new(path);
         let path = path.parent().unwrap();
 
-        for path in std::fs::read_dir(path).unwrap() {
-            let path = path.unwrap().path().display().to_string();
+        let path = std::fs::read_dir(path).unwrap().par_bridge();
 
-            if path.ends_with(".jpg") {
-                return Some(path);
-            }
-        }
+        let path = path.into_par_iter().find_any(|path| {
+            let path = path.as_ref().unwrap().path();
+            let file = path.extension().unwrap_or_default();
 
-        None
+            // in the interest of speed, just check for extension rather than an actual file type check.
+
+            file == "png" || file == "jpg" || file == "jpeg"
+        });
+
+        path.map(|p| p.unwrap().path().display().to_string())
     }
 
-    pub fn insert_track(&mut self, album: &str, track: Track) {
-        for a in &mut self.list_album {
-            if a.name == album {
-                a.list_track.push(track);
-                return;
-            }
+    fn insert_track(&mut self, album: &str, track: Track) {
+        if let Some(album) = self.list_album.par_iter_mut().find_any(|x| x.name == album) {
+            album.list_track.push(track);
+        } else {
+            let icon = Self::get_image(&track.path);
+
+            self.list_album.push(Album {
+                name: album.to_string(),
+                icon,
+                list_track: vec![track],
+            });
         }
-
-        let icon = Self::get_image(&track.path);
-
-        self.list_album.push(Album {
-            name: album.to_string(),
-            icon,
-            list_track: vec![track],
-        });
     }
 }
 
@@ -235,7 +240,226 @@ pub struct Track {
 }
 
 impl Track {
-    pub fn new(path: &str) -> Option<(Option<String>, Option<String>, Track)> {
+    const GENRE_LIST: [&str; 192] = [
+        "Blues",
+        "Classic Rock",
+        "Country",
+        "Dance",
+        "Disco",
+        "Funk",
+        "Grunge",
+        "Hip-Hop",
+        "Jazz",
+        "Metal",
+        "New Age",
+        "Oldies",
+        "Other",
+        "Pop",
+        "R&B",
+        "Rap",
+        "Reggae",
+        "Rock",
+        "Techno",
+        "Industrial",
+        "Alternative",
+        "Ska",
+        "Death Metal",
+        "Pranks",
+        "Soundtrack",
+        "Euro-Techno",
+        "Ambient",
+        "Trip-Hop",
+        "Vocal",
+        "Jazz+Funk",
+        "Fusion",
+        "Trance",
+        "Classical",
+        "Instrumental",
+        "Acid",
+        "House",
+        "Game",
+        "Sound Clip",
+        "Gospel",
+        "Noise",
+        "Alternative Rock",
+        "Bass",
+        "Soul",
+        "Punk",
+        "Space",
+        "Meditative",
+        "Instrumental Pop",
+        "Instrumental Rock",
+        "Ethnic",
+        "Gothic",
+        "Darkwave",
+        "Techno-Industrial",
+        "Electronic",
+        "Pop-Folk",
+        "Eurodance",
+        "Dream",
+        "Southern Rock",
+        "Comedy",
+        "Cult",
+        "Gangsta Rap",
+        "Top 40",
+        "Christian Rap",
+        "Pop/Funk",
+        "Jungle",
+        "Native American",
+        "Cabaret",
+        "New Wave",
+        "Psychedelic",
+        "Rave",
+        "Showtunes",
+        "Trailer",
+        "Lo-Fi",
+        "Tribal",
+        "Acid Punk",
+        "Acid Jazz",
+        "Polka",
+        "Retro",
+        "Musical",
+        "Rock & Roll",
+        "Hard Rock",
+        "Folk",
+        "Folk-Rock",
+        "National Folk",
+        "Swing",
+        "Fast Fusion",
+        "Bebob",
+        "Latin",
+        "Revival",
+        "Celtic",
+        "Bluegrass",
+        "Avantgarde",
+        "Gothic Rock",
+        "Progressive Rock",
+        "Psychedelic Rock",
+        "Symphonic Rock",
+        "Slow Rock",
+        "Big Band",
+        "Chorus",
+        "Easy Listening",
+        "Acoustic",
+        "Humour",
+        "Speech",
+        "Chanson",
+        "Opera",
+        "Chamber Music",
+        "Sonata",
+        "Symphony",
+        "Booty Bass",
+        "Primus",
+        "Porn Groove",
+        "Satire",
+        "Slow Jam",
+        "Club",
+        "Tango",
+        "Samba",
+        "Folklore",
+        "Ballad",
+        "Power Ballad",
+        "Rhythmic Soul",
+        "Freestyle",
+        "Duet",
+        "Punk Rock",
+        "Drum Solo",
+        "A Cappella",
+        "Euro-House",
+        "Dance Hall",
+        "Goa",
+        "Drum & Bass",
+        "Club-House",
+        "Hardcore",
+        "Terror",
+        "Indie",
+        "BritPop",
+        "Negerpunk",
+        "Polsk Punk",
+        "Beat",
+        "Christian Gangsta Rap",
+        "Heavy Metal",
+        "Black Metal",
+        "Crossover",
+        "Contemporary Christian",
+        "Christian Rock",
+        "Merengue",
+        "Salsa",
+        "Thrash Metal",
+        "Anime",
+        "JPop",
+        "Synthpop",
+        "Abstract",
+        "Art Rock",
+        "Baroque",
+        "Bhangra",
+        "Big Beat",
+        "Breakbeat",
+        "Chillout",
+        "Downtempo",
+        "Dub",
+        "EBM",
+        "Eclectic",
+        "Electro",
+        "Electroclash",
+        "Emo",
+        "Experimental",
+        "Garage",
+        "Global",
+        "IDM",
+        "Illbient",
+        "Industro-Goth",
+        "Jam Band",
+        "Krautrock",
+        "Leftfield",
+        "Lounge",
+        "Math Rock",
+        "New Romantic",
+        "Nu-Breakz",
+        "Post-Punk",
+        "Post-Rock",
+        "Psytrance",
+        "Shoegaze",
+        "Space Rock",
+        "Trop Rock",
+        "World Music",
+        "Neoclassical",
+        "Audiobook",
+        "Audio Theatre",
+        "Neue Deutsche Welle",
+        "Podcast",
+        "Indie Rock",
+        "G-Funk",
+        "Dubstep",
+        "Garage Rock",
+        "Psybient",
+    ];
+
+    fn get_track_time(path: &Path) -> Duration {
+        // rodio can never retrieve the duration for an .MP3 file, so we test this first.
+        if let Some(extension) = path.extension()
+            && extension == "mp3"
+        {
+            if let Ok(source) = mp3_duration::from_path(path) {
+                return source;
+            }
+        }
+
+        // use normal rodio method of retrieving duration.
+        if let Ok(src) = std::fs::File::open(path)
+            && let Ok(source) = rodio::Decoder::new(BufReader::new(src))
+        {
+            if let Some(duration) = source.total_duration() {
+                return duration;
+            }
+        }
+
+        Duration::default()
+    }
+
+    fn new(path: &DirEntry) -> Option<(String, String, Track)> {
+        let path = path.path();
+
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
 
@@ -244,7 +468,9 @@ impl Track {
 
         // Create a probe hint using the file's extension. [Optional]
         let mut hint = Hint::new();
-        hint.with_extension("mp3");
+        if let Some(extension) = path.extension() {
+            hint.with_extension(extension.to_str().unwrap());
+        }
 
         // Use the default options for metadata and format readers.
         let meta_opts: MetadataOptions = Default::default();
@@ -254,30 +480,14 @@ impl Track {
         if let Ok(mut probed) =
             symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts)
         {
-            let time = {
-                if let Ok(src) = std::fs::File::open(path)
-                    && let Ok(source) = rodio::Decoder::new(BufReader::new(src))
-                {
-                    if let Some(duration) = source.total_duration() {
-                        duration
-                    } else if let Ok(source) = mp3_duration::from_path(path) {
-                        source
-                    } else {
-                        Duration::default()
-                    }
-                } else {
-                    Duration::default()
-                }
-            };
-
-            let mut file_group: Option<String> = None;
-            let mut file_album: Option<String> = None;
+            let mut file_group = None;
+            let mut file_album = None;
             let mut file_track = Track {
-                name: path.to_string(),
-                path: path.to_string(),
+                name: path.to_str().unwrap().to_string(),
+                path: path.to_str().unwrap().to_string(),
                 date: None,
                 kind: None,
-                time,
+                time: Self::get_track_time(path),
                 icon: (None, None),
                 track: None,
             };
@@ -287,13 +497,37 @@ impl Track {
                     if let Some(key) = tag.std_key {
                         match key {
                             symphonia::core::meta::StandardTagKey::Artist => {
-                                file_group = Some(tag.value.to_string())
+                                file_group = Some(tag.value.to_string());
                             }
                             symphonia::core::meta::StandardTagKey::Album => {
-                                file_album = Some(tag.value.to_string())
+                                file_album = Some(tag.value.to_string());
                             }
                             symphonia::core::meta::StandardTagKey::Genre => {
-                                file_track.kind = Some(tag.value.to_string())
+                                let value = tag.value.to_string();
+
+                                let mut split: Vec<&str> = value.split(&['(', ')']).collect();
+
+                                // clear every empty entry.
+                                split.retain(|x| !x.is_empty());
+
+                                for entry in &mut split {
+                                    // entry is a numerical ID3v1 genre.
+                                    // https://en.wikipedia.org/wiki/List_of_ID3v1_genres
+                                    if let Ok(index) = entry.parse::<usize>() {
+                                        if let Some(genre) = Self::GENRE_LIST.get(index) {
+                                            // genre index is within range.
+                                            *entry = genre;
+                                        } else {
+                                            // unknown genre.
+                                            *entry = "Unknown";
+                                        }
+                                    }
+                                }
+
+                                // join each genre together.
+                                let value = split.join("|");
+
+                                file_track.kind = Some(value);
                             }
                             symphonia::core::meta::StandardTagKey::Date => {
                                 file_track.date = Some(tag.value.to_string())
@@ -324,7 +558,11 @@ impl Track {
                 }
             }
 
-            return Some((file_group, file_album, file_track));
+            return Some((
+                file_group.unwrap_or_else(|| "< Unknown Group >".to_string()),
+                file_album.unwrap_or_else(|| "< Unknown Album >".to_string()),
+                file_track,
+            ));
         }
 
         None
