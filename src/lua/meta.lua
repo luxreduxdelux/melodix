@@ -12,14 +12,14 @@ library = {}
 ---Group class.
 ---@class group
 ---@field name       string # Group name.
----@field list_album table  # A table array of each album.
+---@field list_album table  # Album list. A table array of each album.
 group = {}
 
 ---Album class.
 ---@class album
 ---@field name       string       # Album name.
 ---@field icon       string | nil # Album icon. Absolute path to the album cover; *may* be nil.
----@field list_track table        # A table array of each track.
+---@field list_track table        # Track list. A table array of each track.
 album = {}
 
 ---Track class.
@@ -29,7 +29,7 @@ album = {}
 ---@field time   time         # Track time.
 ---@field date   string | nil # Track date. *May* be nil.
 ---@field kind   string | nil # Track kind. *May* be nil.
----@field icon   table        # A table where the first element *may* be the album cover data and the second element *may* be the dimension of the album cover, if they are present in the meta-data.
+---@field icon   table        # Track icon. A table where the first element *may* be the album cover data and the second element *may* be the dimension of the album cover, if they are present in the meta-data.
 ---@field track  number | nil # Track number. *May* be nil.
 track = {}
 
@@ -43,7 +43,7 @@ TOAST_KIND = {
     INFO    = 0,
     WARNING = 1,
     FAILURE = 2,
-    SUCCESS = 2,
+    SUCCESS = 3,
 }
 
 ---Get the library.

@@ -62,18 +62,25 @@ use rand::seq::{IndexedRandom, SliceRandom};
 pub struct Window {
     /// currently active layout (library, queue, etc.)
     pub layout: Layout,
-    /// repeat state; do we repeat the current track?
+    /// repeat track.
     pub repeat: bool,
-    /// random state; do we randomize the current track?
+    /// randomize queue.
     pub random: bool,
+    /// search state, for group, album, track.
     pub search: (String, String, String),
+    /// select state, for group, album, track.
+    /// index .0 is for the group/album/track index.
+    /// index .1 is for the layout index (for adding a highlight to an entry in the window).
     pub select: (
         (Option<usize>, Option<usize>),
         (Option<usize>, Option<usize>),
         (Option<usize>, Option<usize>),
     ),
+    /// play state, for group, album, track.
     pub state: Option<(usize, usize, usize)>,
+    /// queue state, for group, album, track, and queue index.
     pub queue: (Vec<(usize, usize, usize)>, usize),
+    /// toast notification list.
     pub toast: Toasts,
 }
 
@@ -127,8 +134,6 @@ impl Window {
     }
 
     pub fn draw(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
-        context.request_repaint_after_secs(1.0);
-
         Self::handle_track(app, context)?;
 
         app.window.toast.show(context);
@@ -141,7 +146,6 @@ impl Window {
             Layout::About => Self::draw_about(app, context),
         }
 
-        // remove later
         Ok(())
     }
 
@@ -257,7 +261,7 @@ impl Window {
                                     }
 
                                     if let Some(first) = app.window.queue.0.first() {
-                                        app.track_add(*first, context);
+                                        App::error_result(app.track_add(*first, context));
                                     }
                                 },
                                 _ => {}
@@ -272,11 +276,11 @@ impl Window {
             let table = TableBuilder::new(ui)
                 .striped(true)
                 .sense(egui::Sense::click())
-                .column(Column::auto())
-                .column(Column::remainder())
-                .column(Column::remainder())
-                .column(Column::remainder())
-                .column(Column::remainder())
+                .column(Column::auto().resizable(true))
+                .column(Column::remainder().resizable(true).clip(true))
+                .column(Column::remainder().resizable(true).clip(true))
+                .column(Column::remainder().resizable(true).clip(true))
+                .column(Column::remainder().resizable(true).clip(true))
                 .header(16.0, |mut header| {
                     header.col(|ui| { ui.strong("Number"); });
                     header.col(|ui| { ui.strong("Group");  });
@@ -393,75 +397,86 @@ impl Window {
         Self::draw_panel_layout(app, context);
 
         egui::CentralPanel::default().show(context, |ui| {
-            if ui.button("Scan Folder").clicked() {
-                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+            ui.collapsing("General", |ui| {
+                if ui.button("Scan Folder").clicked() && let Some(folder) = rfd::FileDialog::new().pick_folder() {
                     app.library = Library::scan(&folder.as_path().display().to_string());
                     app.window.layout = Layout::Library;
                 }
-            }
 
-            if ui.button("Dump Sample Lua Plug-In").clicked() {
-                if !std::fs::exists("script").unwrap() {
-                    std::fs::create_dir("script").unwrap();
+                ui.checkbox(&mut app.setting.window_media, "Allow automatic update check").on_hover_text("Will take effect on restart.");
+                ui.checkbox(&mut app.setting.window_media, "Allow multi-media key usage").on_hover_text("Will take effect on restart.");
+                ui.checkbox(&mut app.setting.window_tray,  "Show tray icon").on_hover_text("Will take effect on restart.");
+                ui.checkbox(&mut app.setting.window_push,  "Show track notification").on_hover_text("Will take effect on restart.");
+            });
+
+            //================================================================
+
+            ui.collapsing("Window", |ui| {
+                if ui.add(egui::Slider::new(&mut app.setting.window_scale, 1.0..=2.0).text("Scale factor")).changed() {
+                    context.set_zoom_factor(app.setting.window_scale);
+                };
+
+                if ui.checkbox(&mut app.setting.window_theme, "Use alternate theme").clicked() {
+                    if app.setting.window_theme {
+                        context.set_theme(egui::Theme::Light);
+                    } else {
+                        context.set_theme(egui::Theme::Dark);
+                    }
+                };
+
+                ui.checkbox(&mut app.setting.window_time,  "Show track duration");
+                ui.checkbox(&mut app.setting.window_date,  "Show track date");
+                ui.checkbox(&mut app.setting.window_kind,  "Show track kind");
+                ui.checkbox(&mut app.setting.window_track, "Show track number");
+            });
+
+            //================================================================
+
+            ui.collapsing("Script", |ui| {
+                if ui.button("Open Folder").clicked() {
+                    let _ = opener::open(Script::get_path());
                 }
 
-                let main = std::fs::write("script/main.lua", Script::DATA_MAIN);
-                let meta = std::fs::write("script/meta.lua", Script::DATA_META);
+                if ui.button("Save Sample Plug-In").clicked() {
+                    let path = Script::get_path();
 
-                if main.is_ok() && meta.is_ok() {
-                    rfd::MessageDialog::new()
-                        .set_level(rfd::MessageLevel::Info)
-                        .set_title("Lua Plug-In")
-                        .set_description("A new script/ folder has been made in the root directory of your Melodix installation, and within it, the API documentation for Melodix as well as a sample Lua plug-in. Enable 'Allow Lua plug-in scripting' and restart Melodix for the change to take effect.")
-                        .show();
-                } else {
-                    rfd::MessageDialog::new()
-                        .set_level(rfd::MessageLevel::Error)
-                        .set_title("Lua Plug-In")
-                        .set_description("Could not write the sample Lua plug-in.")
-                        .show();
-                }
-            }
+                    let main = std::fs::write(format!("{path}/main.lua"), Script::DATA_MAIN);
+                    let meta = std::fs::write(format!("{path}/meta.lua"), Script::DATA_META);
 
-            if ui.add(egui::Slider::new(&mut app.setting.window_scale, 1.0..=2.0).text("Window scale factor")).drag_stopped() {
-                context.set_zoom_factor(app.setting.window_scale);
-            };
-
-            if ui.checkbox(&mut app.setting.window_theme, "Use alternate window theme").clicked() {
-                if app.setting.window_theme {
-                    context.set_theme(egui::Theme::Light);
-                } else {
-                    context.set_theme(egui::Theme::Dark);
-                }
-            };
-            ui.checkbox(&mut app.setting.window_media, "Allow multi-media key usage").on_hover_text("Will take effect on restart.");
-            ui.checkbox(&mut app.setting.window_tray,  "Show tray icon").on_hover_text("Will take effect on restart.");
-            ui.checkbox(&mut app.setting.window_push,  "Show track notification").on_hover_text("Will take effect on restart.");
-            ui.checkbox(&mut app.setting.script_allow, "Allow Lua plug-in scripting").on_hover_text("Will take effect on restart.");
-
-            if app.setting.script_allow {
-                ui.separator();
-                ui.heading("Lua Plug-In Configuration");
-
-                for script in &mut app.script.script_list {
-                    if let Some(setting) = &mut script.0.setting {
-                        ui.collapsing(&script.0.name, |ui| {
-                            ui.group(|ui| {
-                                ui.label(format!("Info: {}", &script.0.info));
-                                ui.label(format!("From: {}", &script.0.from));
-                                ui.label(format!("Version: {}", &script.0.version));
-                            });
-
-                            let table: mlua::Table = script.1.get("setting").unwrap();
-
-                            for (key, value) in setting.iter() {
-                                let table: mlua::Table = table.get(&**key).unwrap();
-                                value.draw(&script.1, &table, ui, ());
-                            }
-                        });
+                    if main.is_ok() && meta.is_ok() {
+                        let _ = opener::open(path);
+                    } else {
+                        rfd::MessageDialog::new()
+                            .set_level(rfd::MessageLevel::Error)
+                            .set_title("Lua Plug-In")
+                            .set_description("Could not write the sample Lua plug-in.")
+                            .show();
                     }
                 }
-            }
+
+                ui.checkbox(&mut app.setting.script_allow, "Allow Lua plug-in scripting").on_hover_text("Will take effect on restart.");
+
+                ui.add_enabled_ui(app.setting.script_allow, |ui| {
+                    for script in &mut app.script.script_list {
+                        if let Some(setting) = &mut script.0.setting {
+                            ui.collapsing(&script.0.name, |ui| {
+                                ui.group(|ui| {
+                                    ui.label(format!("Info: {}", &script.0.info));
+                                    ui.label(format!("From: {}", &script.0.from));
+                                    ui.label(format!("Version: {}", &script.0.version));
+                                });
+
+                                let table: mlua::Table = script.1.get("setting").unwrap();
+
+                                for (key, value) in setting.iter() {
+                                    let table: mlua::Table = table.get(&**key).unwrap();
+                                    App::error_result(value.draw(&script.1, &table, ui, ()));
+                                }
+                            });
+                        }
+                    }
+                });
+            });
         });
     }
 
@@ -642,7 +657,7 @@ impl Window {
     fn queue_reset(app: &mut App) {
         app.window.queue.0.clear();
         app.window.queue.1 = 0;
-        app.track_stop();
+        app.track_stop(false);
     }
 
     fn queue_play_group(
@@ -910,6 +925,7 @@ impl Window {
             });
     }
 
+    #[rustfmt::skip]
     fn draw_panel_track(app: &mut App, context: &egui::Context) {
         let rect = context.available_rect();
 
@@ -945,31 +961,23 @@ impl Window {
 
                     ui.separator();
 
-                    let table = TableBuilder::new(ui)
+                    let mut table = TableBuilder::new(ui)
                         .striped(true)
-                        .sense(egui::Sense::click())
-                        .column(Column::auto())
-                        .column(Column::remainder())
-                        .column(Column::remainder())
-                        .column(Column::remainder())
-                        .column(Column::auto())
-                        .header(16.0, |mut header| {
-                            header.col(|ui| {
-                                ui.strong("Track");
-                            });
-                            header.col(|ui| {
-                                ui.strong("Title");
-                            });
-                            header.col(|ui| {
-                                ui.strong("Genre");
-                            });
-                            header.col(|ui| {
-                                ui.strong("Date");
-                            });
-                            header.col(|ui| {
-                                ui.strong("Time");
-                            });
-                        });
+                        .sense(egui::Sense::click());
+
+                    if app.setting.window_track { table = table.column(Column::auto().resizable(true)); }
+                                                  table = table.column(Column::remainder().resizable(true).clip(true));
+                    if app.setting.window_kind  { table = table.column(Column::remainder().resizable(true).clip(true)); }
+                    if app.setting.window_date  { table = table.column(Column::remainder().resizable(true).clip(true)); }
+                    if app.setting.window_time  { table = table.column(Column::remainder().resizable(true).clip(true)); }
+
+                    let table = table.header(16.0, |mut header| {
+                        if app.setting.window_track { header.col(|ui| { ui.strong("Track"); }); }
+                                                      header.col(|ui| { ui.strong("Title"); });
+                        if app.setting.window_kind  { header.col(|ui| { ui.strong("Genre"); }); }
+                        if app.setting.window_date  { header.col(|ui| { ui.strong("Date");  }); }
+                        if app.setting.window_time  { header.col(|ui| { ui.strong("Time");  }); }
+                    });
 
                     table.body(|ui| {
                         ui.rows(16.0, app.library.list_shown.2.len(), |mut row| {
@@ -981,51 +989,45 @@ impl Window {
                             let index = app.library.list_shown.2.get(i).unwrap();
                             let track = album.list_track.get(*index).unwrap();
 
-                            row.col(|ui| {
-                                let order = {
-                                    if let Some(order) = track.track {
-                                        order.to_string()
-                                    } else {
-                                        "".to_string()
-                                    }
-                                };
-                                ui.add(egui::Label::new(&order).selectable(false));
-                            });
+                            if app.setting.window_track {
+                                row.col(|ui| {
+                                    let order = track.track.unwrap_or_default().to_string();
+                                    ui.add(egui::Label::new(&order).selectable(false));
+                                });
+                            }
 
                             row.col(|ui| {
                                 ui.add(egui::Label::new(&track.name).selectable(false));
                             });
 
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(if let Some(kind) = &track.kind {
-                                        kind.as_str()
-                                    } else {
-                                        ""
-                                    })
-                                    .selectable(false),
-                                );
-                            });
+                            if app.setting.window_kind {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(track.kind.as_deref().unwrap_or_default())
+                                        .selectable(false),
+                                    );
+                                });
+                            }
 
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(if let Some(date) = &track.date {
-                                        date.as_str()
-                                    } else {
-                                        ""
-                                    })
-                                    .selectable(false),
-                                );
-                            });
+                            if app.setting.window_date {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(track.date.as_deref().unwrap_or_default())
+                                        .selectable(false),
+                                    );
+                                });
+                            }
 
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(Self::format_time(
-                                        track.time.as_secs() as usize
-                                    ))
-                                    .selectable(false),
-                                );
-                            });
+                            if app.setting.window_time {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(Self::format_time(
+                                            track.time.as_secs() as usize
+                                        ))
+                                        .selectable(false),
+                                    );
+                                });
+                            }
 
                             row.response().context_menu(|ui| {
                                 for script in &mut app.script.script_list {
