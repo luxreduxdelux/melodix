@@ -1,1 +1,0 @@
-This is the Boondle project folder. You can open this folder using [Boondle](https://github.com/luxreduxdelux/boondle) to automatically compile and package Melodix.

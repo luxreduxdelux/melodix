@@ -10,6 +10,9 @@ codegen-units = 1
 panic         = "abort"
 strip         = "none"
 
+# dependency list:
+# sudo apt install libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+
 [profile.dev]
 debug = 0
 
