@@ -48,7 +48,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-use crate::{app::*, library::*, script::*};
+use crate::{app::*, library::*, script::*, system::*};
 
 //================================================================
 
@@ -134,6 +134,7 @@ impl Window {
     }
 
     pub fn draw(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
+        Self::handle_close(app, context);
         Self::handle_track(app, context)?;
 
         app.window.toast.show(context);
@@ -152,6 +153,21 @@ impl Window {
     //================================================================
     // utility.
     //================================================================
+
+    fn handle_close(app: &mut App, context: &egui::Context) {
+        let mut close = false;
+
+        context.viewport(|state| {
+            if state.input.viewport().close_requested() && !app.system.close {
+                close = true;
+            }
+        });
+
+        if close {
+            System::toggle_visible(app, context);
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
 
     fn handle_track(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
         if app.system.sink.empty()

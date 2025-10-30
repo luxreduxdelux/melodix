@@ -48,6 +48,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use crate::egui::ViewportCommand;
 use crate::{app::*, library::*, setting::*};
 
 //================================================================
@@ -85,14 +86,17 @@ pub struct System {
     tray: Option<Receiver<MenuEvent>>,
     /// media sink stream and handle.
     stream: OutputStream,
+    show: bool,
+    pub close: bool,
 }
 
 impl System {
     const TRAY_ICON: &[u8] = include_bytes!("../data/tray.png");
-    const TRAY_COMMAND_TOGGLE: &str = "1";
-    const TRAY_COMMAND_SKIP_A: &str = "2";
-    const TRAY_COMMAND_SKIP_B: &str = "3";
-    const TRAY_COMMAND_EXIT: &str = "4";
+    const TRAY_COMMAND_SHOW: &str = "1";
+    const TRAY_COMMAND_TOGGLE: &str = "2";
+    const TRAY_COMMAND_SKIP_A: &str = "3";
+    const TRAY_COMMAND_SKIP_B: &str = "4";
+    const TRAY_COMMAND_EXIT: &str = "5";
     const PUSH_COMMAND_SKIP_A: &str = "skip_a";
     const PUSH_COMMAND_SKIP_B: &str = "skip_b";
 
@@ -119,8 +123,6 @@ impl System {
         };
 
         let media = if setting.window_media {
-            // TO-DO different MC::new() result on Windows for some reason?
-            /*
             let mut media = MediaControls::new(config)?;
 
             let clone = context.egui_ctx.clone();
@@ -133,9 +135,6 @@ impl System {
                     .expect("System::new(): Couldn't send media event.");
             })?;
             Some((media, media_rx))
-            */
-
-            None
         } else {
             None
         };
@@ -147,6 +146,10 @@ impl System {
                     gtk::init().expect("System::new(): Couldn't create GTK instance.");
 
                     let tray_menu = tray_icon::menu::Menu::with_items(&[
+                        &MenuItemBuilder::new()
+                            .text("Show/Hide")
+                            .enabled(true)
+                            .build(),
                         &MenuItemBuilder::new()
                             .text("Play/Pause")
                             .enabled(true)
@@ -176,6 +179,10 @@ impl System {
             #[cfg(not(target_os = "linux"))]
             {
                 let tray_menu = tray_icon::menu::Menu::with_items(&[
+                    &MenuItemBuilder::new()
+                        .text("Show/Hide")
+                        .enabled(true)
+                        .build(),
                     &MenuItemBuilder::new()
                         .text("Play/Pause")
                         .enabled(true)
@@ -224,7 +231,36 @@ impl System {
             media,
             push,
             tray,
+            show: true,
+            close: false,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_wayland() -> bool {
+        match std::env::var("XDG_SESSION_TYPE") {
+            Ok(val) if val.as_str() == "wayland" => true,
+            Ok(val) if val.as_str() == "x11" => false,
+            _ if std::env::var("WAYLAND_DISPLAY").is_ok() => true,
+            _ => false,
+        }
+    }
+
+    pub fn toggle_visible(app: &mut App, context: &egui::Context) {
+        app.system.show = !app.system.show;
+
+        #[cfg(target_os = "linux")]
+        {
+            if Self::is_wayland() {
+                context.send_viewport_cmd(ViewportCommand::Minimized(!app.system.show));
+            } else {
+                context.send_viewport_cmd(ViewportCommand::Visible(app.system.show));
+            }
+        }
+        #[cfg(target_os = "windows")]
+        context.send_viewport_cmd(ViewportCommand::Minimized(!app.system.visible));
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        context.send_viewport_cmd(ViewportCommand::Visible(app.system.visible));
     }
 
     pub fn poll_event(&mut self) -> Option<MediaControlEvent> {
@@ -251,6 +287,7 @@ impl System {
             && let Ok(event) = tray_rx.try_recv()
         {
             match event.id.0.as_str() {
+                Self::TRAY_COMMAND_SHOW => return Some(MediaControlEvent::Raise),
                 Self::TRAY_COMMAND_TOGGLE => return Some(MediaControlEvent::Toggle),
                 Self::TRAY_COMMAND_SKIP_A => return Some(MediaControlEvent::Previous),
                 Self::TRAY_COMMAND_SKIP_B => return Some(MediaControlEvent::Next),
@@ -289,8 +326,11 @@ impl System {
                 app.track_seek(media_position.0.as_secs() as i64, false)
             }
             MediaControlEvent::SetVolume(volume) => app.track_set_volume(volume as f32),
-            MediaControlEvent::Raise             => context.send_viewport_cmd(egui::ViewportCommand::Focus),
-            MediaControlEvent::Quit              => context.send_viewport_cmd(egui::ViewportCommand::Close),
+            MediaControlEvent::Raise             => Self::toggle_visible(app, context),
+            MediaControlEvent::Quit              => {
+                app.system.close = true;
+                context.send_viewport_cmd(egui::ViewportCommand::Close)
+            }
             _ => {}
         }
 

@@ -1,6 +1,3 @@
-[build]
-rustflags = ["-Clink-arg=-fuse-ld=mold", "-Zthreads=12"]
-
 # this is necessary for each Lua module to work properly.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-args=-rdynamic"]
