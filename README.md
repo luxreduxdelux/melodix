@@ -10,7 +10,7 @@ A simple music player, written in Rust.
 Download the latest release from [here](https://github.com/luxreduxdelux/melodix/releases) and launch Melodix.
 
 ## Documentation
-The Lua plug-in API documentation can be found [here](https://github.com/luxreduxdelux/melodix/blob/main/src/lua/meta.lua).
+The Lua module API documentation can be found [here](https://github.com/luxreduxdelux/melodix/blob/main/src/lua/meta.lua).
 
 ## Build
 Run `cargo build --release` in the root of the Melodix folder.

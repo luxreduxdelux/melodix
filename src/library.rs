@@ -48,15 +48,13 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use crate::app::*;
+
+//================================================================
+
 use rodio::Source;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, HashMap},
-    fs::FileType,
-    io::BufReader,
-    path::Path,
-    time::{Duration, SystemTime},
-};
+use std::{collections::HashMap, io::BufReader, path::Path, time::Duration};
 use symphonia::core::{
     formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
 };
@@ -76,26 +74,8 @@ pub struct Library {
 impl Library {
     const PATH_LIBRARY: &'static str = "library.data";
 
-    fn get_path() -> String {
-        let home = {
-            if let Some(path) = std::env::home_dir() {
-                let path = format!("{}/.melodix/", path.display());
-
-                if let Ok(false) = std::fs::exists(&path) {
-                    std::fs::create_dir(&path).unwrap();
-                }
-
-                path
-            } else {
-                String::default()
-            }
-        };
-
-        format!("{home}{}", Self::PATH_LIBRARY)
-    }
-
     pub fn new() -> Self {
-        if let Ok(file) = std::fs::read(Self::get_path())
+        if let Ok(file) = std::fs::read(App::get_configuration_path(Self::PATH_LIBRARY))
             && let Ok(library) = postcard::from_bytes::<Self>(&file)
         {
             return Self {
@@ -169,7 +149,7 @@ impl Library {
         };
 
         let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
-        std::fs::write(Self::get_path(), serialize).unwrap();
+        std::fs::write(App::get_configuration_path(Self::PATH_LIBRARY), serialize).unwrap();
 
         library
     }
@@ -195,7 +175,6 @@ impl Group {
             let file = path.extension().unwrap_or_default();
 
             // in the interest of speed, just check for extension rather than an actual file type check.
-
             file == "png" || file == "jpg" || file == "jpeg"
         });
 

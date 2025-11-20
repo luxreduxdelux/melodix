@@ -359,10 +359,10 @@ struct Setting {
 impl Setting {
     const PATH_DATA: &'static str = "script/discord.data";
 
-    fn get_path() -> String {
+    fn get_configuration_path() -> String {
         let home = {
-            if let Some(path) = std::env::home_dir() {
-                let path = format!("{}/.melodix/", path.display());
+            if let Some(path) = dirs::config_dir() {
+                let path = format!("{}/melodix/", path.display());
 
                 if let Ok(false) = std::fs::exists(&path) {
                     std::fs::create_dir(&path).unwrap();
@@ -380,7 +380,7 @@ impl Setting {
 
 impl Default for Setting {
     fn default() -> Self {
-        if let Ok(file) = std::fs::read(Self::get_path()) {
+        if let Ok(file) = std::fs::read(Self::get_configuration_path()) {
             postcard::from_bytes(&file).unwrap_or(Self {
                 cache: HashMap::default(),
                 cover: true,

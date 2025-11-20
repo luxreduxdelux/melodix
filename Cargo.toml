@@ -18,9 +18,9 @@ debug = 0
 
 [dependencies]
 mlua              = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize"] }
-eframe            = { version = "0.32.0"                               }
-egui-toast        = { git = "https://github.com/creativcoder/egui-toast", branch = "main" }
-egui_extras       = { version = "0.32.0", features = ["file", "image", "svg"] }
+eframe            = { version = "0.33.2"                               }
+egui-toast        = { git = "https://github.com/LazerSharkk/egui-toast", branch = "main" }
+egui_extras       = { version = "0.33.2", features = ["file", "image", "svg"] }
 image             = { version = "0.25.6", features = ["jpeg", "png"]   }
 postcard          = { version = "1.0.0",  features = ["alloc"]  }
 serde             = { version = "1.0",    features = ["derive"] }
@@ -38,7 +38,6 @@ rand              = { version = "0.9.1" }
 m3u               = { version = "1.0.0" }
 raw-window-handle = { version = "0.6.2" }
 opener            = { version = "0.8.2" }
-# TO-DO actually utilize this
 dirs              = { version = "6.0.0" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

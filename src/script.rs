@@ -185,7 +185,7 @@ pub struct Script {
 }
 
 impl Script {
-    const PATH_SCRIPT: &'static str = "script/";
+    pub const PATH_SCRIPT: &'static str = "script/";
     pub const DATA_MAIN: &'static str = include_str!("lua/main.lua");
     pub const DATA_META: &'static str = include_str!("lua/meta.lua");
     pub const CALL_BEGIN: &'static str = "begin";
@@ -197,28 +197,10 @@ impl Script {
     pub const CALL_SKIP_B: &'static str = "skip_b";
     pub const CALL_PAUSE: &'static str = "pause";
 
-    pub fn get_path() -> String {
-        let home = {
-            if let Some(path) = std::env::home_dir() {
-                let path = format!("{}/.melodix/", path.display());
-
-                if let Ok(false) = std::fs::exists(&path) {
-                    std::fs::create_dir(&path).unwrap();
-                }
-
-                path
-            } else {
-                String::default()
-            }
-        };
-
-        format!("{home}{}", Self::PATH_SCRIPT)
-    }
-
     pub fn new(setting: &Setting) -> anyhow::Result<Self> {
         let lua = unsafe { Lua::unsafe_new() };
         let mut script_list = Vec::new();
-        let path = Self::get_path();
+        let path = App::get_configuration_path(Self::PATH_SCRIPT);
 
         if setting.script_allow {
             if let Ok(true) = std::fs::exists(&path) {
@@ -276,7 +258,7 @@ impl Script {
             format!(
                 "{:?};{}?.so",
                 package.get::<mlua::String>("cpath")?,
-                Script::get_path()
+                App::get_configuration_path(Self::PATH_SCRIPT)
             ),
         )?;
 
@@ -286,7 +268,7 @@ impl Script {
             format!(
                 "{:?};{}?.dll",
                 package.get::<mlua::String>("cpath")?,
-                Script::get_path()
+                App::get_configuration_path(Self::PATH_SCRIPT)
             ),
         )?;
 

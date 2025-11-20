@@ -83,7 +83,7 @@ pub struct System {
     /// push event handler.
     push: Option<(Sender<String>, Receiver<String>)>,
     /// tray event handler.
-    tray: Option<Receiver<MenuEvent>>,
+    pub tray: Option<Receiver<MenuEvent>>,
     /// media sink stream and handle.
     stream: OutputStream,
     show: bool,
@@ -258,9 +258,9 @@ impl System {
             }
         }
         #[cfg(target_os = "windows")]
-        context.send_viewport_cmd(ViewportCommand::Minimized(!app.system.visible));
+        context.send_viewport_cmd(ViewportCommand::Minimized(!app.system.show));
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        context.send_viewport_cmd(ViewportCommand::Visible(app.system.visible));
+        context.send_viewport_cmd(ViewportCommand::Visible(app.system.show));
     }
 
     pub fn poll_event(&mut self) -> Option<MediaControlEvent> {

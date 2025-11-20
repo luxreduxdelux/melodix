@@ -1,6 +1,6 @@
 ---@type plug_in
 local plug_in = {
-    name    = "Sample Lua Plug-In",
+    name    = "Sample Lua Module",
     info    = "Sample.",
     from    = "luxreduxdelux",
     version = "1.0.0",
