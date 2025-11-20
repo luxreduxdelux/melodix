@@ -12,3 +12,4 @@ discord-presence = { version = "1.6",    features = ["activity_type"]           
 postcard         = { version = "1.0.0",  features = ["alloc"]                              }
 serde            = { version = "1.0",    features = ["derive"]                             }
 musicbrainz_rs   = { version = "0.9.1",  features = ["blocking"], default-features = false }
+dirs             = { version = "6.0.0" }

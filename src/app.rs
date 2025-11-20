@@ -57,15 +57,8 @@ use std::{io::BufReader, time::Duration};
 
 //================================================================
 
-// TO-DO rename any instance of "module"/"add-on" to "plug-in"
 // TO-DO last.fm plug-in
-// TO-DO ListenBrainz plug-in
-// TO-DO select what tag data is shown on library track view (genre, year, time, etc.)
 // TO-DO allow multi-selection in group/album/track
-// TO-DO tag editor
-// TO-DO ReplayGain editor (wxMP3gain-esque front-end for ReplayGain)
-// TO-DO Soulseek client
-// TO-DO successful Discord connection call-back in Discord plug-in?
 
 pub static mut GLOBAL_APP: *mut App = std::ptr::null_mut();
 
@@ -257,6 +250,24 @@ impl App {
                 .set_description(error.to_string())
                 .show();
         }
+    }
+
+    pub fn get_configuration_path(path: &str) -> String {
+        let home = {
+            if let Some(path) = dirs::config_dir() {
+                let path = format!("{}/melodix/", path.display());
+
+                if let Ok(false) = std::fs::exists(&path) {
+                    std::fs::create_dir(&path).unwrap();
+                }
+
+                path
+            } else {
+                String::default()
+            }
+        };
+
+        format!("{home}{}", path)
     }
 }
 

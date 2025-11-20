@@ -48,6 +48,8 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+use std::path::PathBuf;
+
 use crate::{app::*, library::*, script::*, system::*};
 
 //================================================================
@@ -158,7 +160,11 @@ impl Window {
         let mut close = false;
 
         context.viewport(|state| {
-            if state.input.viewport().close_requested() && !app.system.close {
+            // if we don't have a close signal, and we have a tray icon (so we can actually close the app), discard close request.
+            if state.input.viewport().close_requested()
+                && !app.system.close
+                && app.system.tray.is_some()
+            {
                 close = true;
             }
         });
@@ -227,6 +233,113 @@ impl Window {
         });
     }
 
+    fn queue_save(app: &App, file: PathBuf) -> anyhow::Result<()> {
+        let mut file = std::fs::File::create(file)?;
+        let mut writer = m3u::Writer::new(&mut file);
+
+        for entry in &app.window.queue.0 {
+            let (_, _, track) = app.get_state(*entry);
+            writer.write_entry(&m3u::Entry::Path(track.path.clone().into()))?;
+        }
+
+        Ok(())
+    }
+
+    fn queue_load(app: &mut App, context: &egui::Context, path: PathBuf) -> anyhow::Result<()> {
+        let mut reader = m3u::Reader::open(path)?;
+        let read_playlist: Vec<_> = reader.entries().map(|entry| entry.unwrap()).collect();
+
+        Self::queue_reset(app);
+
+        for entry in read_playlist {
+            match entry {
+                m3u::Entry::Path(path) => {
+                    let mut play = Vec::new();
+
+                    for (i_group, group) in app.library.list_group.iter().enumerate() {
+                        for (i_album, album) in group.list_album.iter().enumerate() {
+                            for (i_track, track) in album.list_track.iter().enumerate() {
+                                if track.path == path.display().to_string() {
+                                    play.push((i_group, i_album, i_track));
+                                }
+                            }
+                        }
+                    }
+
+                    for (i_g, i_a, i_t) in play {
+                        app.window.queue.0.push((i_g, i_a, i_t));
+                        app.window.queue.1 = 0;
+                    }
+
+                    if let Some(first) = app.window.queue.0.first() {
+                        app.track_add(*first, context)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn queue_reset(app: &mut App) {
+        app.window.queue.0.clear();
+        app.window.queue.1 = 0;
+        app.track_stop(false);
+    }
+
+    fn queue_play_group(
+        app: &mut App,
+        i_group: usize,
+        context: &egui::Context,
+    ) -> anyhow::Result<()> {
+        Self::queue_reset(app);
+        let group = app.library.list_group.get(i_group).unwrap();
+
+        for (i_album, album) in group.list_album.iter().enumerate() {
+            for (i_track, _) in album.list_track.iter().enumerate() {
+                app.window.queue.0.push((i_group, i_album, i_track));
+            }
+        }
+
+        app.track_add((i_group, 0, 0), context)
+    }
+
+    fn queue_play_album(
+        app: &mut App,
+        group: usize,
+        album: usize,
+        context: &egui::Context,
+    ) -> anyhow::Result<()> {
+        Self::queue_reset(app);
+        let i_group = app.library.list_group.get(group).unwrap();
+        let i_album = i_group.list_album.get(album).unwrap();
+
+        for x in 0..i_album.list_track.len() {
+            app.window.queue.0.push((group, album, x));
+        }
+
+        app.track_add((group, album, 0), context)
+    }
+
+    fn queue_play_track(
+        app: &mut App,
+        group: usize,
+        album: usize,
+        track: usize,
+        context: &egui::Context,
+    ) -> anyhow::Result<()> {
+        Self::queue_reset(app);
+        let i_group = app.library.list_group.get(group).unwrap();
+        let i_album = i_group.list_album.get(album).unwrap();
+
+        for x in track..i_album.list_track.len() {
+            app.window.queue.0.push((group, album, x));
+        }
+
+        app.track_add((group, album, track), context)
+    }
+
     //================================================================
     // queue layout.
     //================================================================
@@ -240,49 +353,12 @@ impl Window {
             ui.horizontal(|ui| {
                 if ui.button("Save Queue").clicked() {
                     if let Some(file) = rfd::FileDialog::new().set_file_name("queue.m3u").add_filter("m3u", &["m3u"]).save_file() {
-                        let mut file = std::fs::File::create(file).unwrap();
-                        let mut writer = m3u::Writer::new(&mut file);
-
-                        for entry in &app.window.queue.0 {
-                            let (_, _, track) = app.get_state(*entry);
-                            writer.write_entry(&m3u::Entry::Path(track.path.clone().into())).unwrap();
-                        }
+                        App::error_result(Self::queue_save(app, file));
                     }
                 }
                 if ui.button("Load Queue").clicked() {
                     if let Some(file) = rfd::FileDialog::new().add_filter("m3u", &["m3u"]).pick_file() {
-                        let mut reader = m3u::Reader::open(file).unwrap();
-                        let read_playlist: Vec<_> = reader.entries().map(|entry| entry.unwrap()).collect();
-
-                        Self::queue_reset(app);
-
-                        for entry in read_playlist {
-                            match entry {
-                                m3u::Entry::Path(path) => {
-                                    let mut play = Vec::new();
-
-                                    for (i_group, group) in app.library.list_group.iter().enumerate() {
-                                        for (i_album, album) in group.list_album.iter().enumerate() {
-                                            for (i_track, track) in album.list_track.iter().enumerate() {
-                                                if track.path == path.display().to_string() {
-                                                    play.push((i_group, i_album, i_track));
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    for (i_g, i_a, i_t) in play {
-                                        app.window.queue.0.push((i_g, i_a, i_t));
-                                        app.window.queue.1 = 0;
-                                    }
-
-                                    if let Some(first) = app.window.queue.0.first() {
-                                        App::error_result(app.track_add(*first, context));
-                                    }
-                                },
-                                _ => {}
-                            }
-                        }
+                        App::error_result(Self::queue_load(app, context, file));
                     }
                 }
             });
@@ -335,7 +411,7 @@ impl Window {
                                     let table: mlua::Table = script.1.get("queue").unwrap();
 
                                     for (key, value) in s_queue.iter() {
-                                        value.draw(&script.1, &table.get(&**key).unwrap(), ui, (queue.0, queue.1, queue.2));
+                                        App::error_result(value.draw(&script.1, &table.get(&**key).unwrap(), ui, (queue.0, queue.1, queue.2)));
                                     }
                                 });
                             }
@@ -419,7 +495,6 @@ impl Window {
                     app.window.layout = Layout::Library;
                 }
 
-                ui.checkbox(&mut app.setting.window_media, "Allow automatic update check").on_hover_text("Will take effect on restart.");
                 ui.checkbox(&mut app.setting.window_media, "Allow multi-media key usage").on_hover_text("Will take effect on restart.");
                 ui.checkbox(&mut app.setting.window_tray,  "Show tray icon").on_hover_text("Will take effect on restart.");
                 ui.checkbox(&mut app.setting.window_push,  "Show track notification").on_hover_text("Will take effect on restart.");
@@ -450,11 +525,11 @@ impl Window {
 
             ui.collapsing("Script", |ui| {
                 if ui.button("Open Folder").clicked() {
-                    let _ = opener::open(Script::get_path());
+                    let _ = opener::open(App::get_configuration_path(Script::PATH_SCRIPT));
                 }
 
-                if ui.button("Save Sample Plug-In").clicked() {
-                    let path = Script::get_path();
+                if ui.button("Save Sample Module").clicked() {
+                    let path = App::get_configuration_path(Script::PATH_SCRIPT);
 
                     let main = std::fs::write(format!("{path}/main.lua"), Script::DATA_MAIN);
                     let meta = std::fs::write(format!("{path}/meta.lua"), Script::DATA_META);
@@ -464,13 +539,13 @@ impl Window {
                     } else {
                         rfd::MessageDialog::new()
                             .set_level(rfd::MessageLevel::Error)
-                            .set_title("Lua Plug-In")
-                            .set_description("Could not write the sample Lua plug-in.")
+                            .set_title("Lua Module")
+                            .set_description("Could not write the sample Lua module.")
                             .show();
                     }
                 }
 
-                ui.checkbox(&mut app.setting.script_allow, "Allow Lua plug-in scripting").on_hover_text("Will take effect on restart.");
+                ui.checkbox(&mut app.setting.script_allow, "Allow Lua module scripting").on_hover_text("Will take effect on restart.");
 
                 ui.add_enabled_ui(app.setting.script_allow, |ui| {
                     for script in &mut app.script.script_list {
@@ -670,64 +745,6 @@ impl Window {
         }
     }
 
-    fn queue_reset(app: &mut App) {
-        app.window.queue.0.clear();
-        app.window.queue.1 = 0;
-        app.track_stop(false);
-    }
-
-    fn queue_play_group(
-        app: &mut App,
-        i_group: usize,
-        context: &egui::Context,
-    ) -> anyhow::Result<()> {
-        Self::queue_reset(app);
-        let group = app.library.list_group.get(i_group).unwrap();
-
-        for (i_album, album) in group.list_album.iter().enumerate() {
-            for (i_track, _) in album.list_track.iter().enumerate() {
-                app.window.queue.0.push((i_group, i_album, i_track));
-            }
-        }
-
-        app.track_add((i_group, 0, 0), context)
-    }
-
-    fn queue_play_album(
-        app: &mut App,
-        group: usize,
-        album: usize,
-        context: &egui::Context,
-    ) -> anyhow::Result<()> {
-        Self::queue_reset(app);
-        let i_group = app.library.list_group.get(group).unwrap();
-        let i_album = i_group.list_album.get(album).unwrap();
-
-        for x in 0..i_album.list_track.len() {
-            app.window.queue.0.push((group, album, x));
-        }
-
-        app.track_add((group, album, 0), context)
-    }
-
-    fn queue_play_track(
-        app: &mut App,
-        group: usize,
-        album: usize,
-        track: usize,
-        context: &egui::Context,
-    ) -> anyhow::Result<()> {
-        Self::queue_reset(app);
-        let i_group = app.library.list_group.get(group).unwrap();
-        let i_album = i_group.list_album.get(album).unwrap();
-
-        for x in track..i_album.list_track.len() {
-            app.window.queue.0.push((group, album, x));
-        }
-
-        app.track_add((group, album, track), context)
-    }
-
     #[rustfmt::skip]
     fn draw_panel_group(app: &mut App, context: &egui::Context) {
         let rect = context.available_rect();
@@ -797,7 +814,7 @@ impl Window {
                                         let table: mlua::Table = script.1.get("group").unwrap();
 
                                         for (key, value) in s_group.iter() {
-                                            value.draw(&script.1, &table.get(&**key).unwrap(), ui, (*index,));
+                                            App::error_result(value.draw(&script.1, &table.get(&**key).unwrap(), ui, (*index,)));
                                         }
                                     });
                                 }
@@ -903,12 +920,12 @@ impl Window {
                                             let table: mlua::Table = script.1.get("album").unwrap();
 
                                             for (key, value) in s_album.iter() {
-                                                value.draw(
+                                                App::error_result(value.draw(
                                                     &script.1,
                                                     &table.get(&**key).unwrap(),
                                                     ui,
                                                     (select, *index),
-                                                );
+                                                ));
                                             }
                                         });
                                     }
@@ -1052,12 +1069,12 @@ impl Window {
                                             let table: mlua::Table = script.1.get("track").unwrap();
 
                                             for (key, value) in s_track.iter() {
-                                                value.draw(
+                                                App::error_result(value.draw(
                                                     &script.1,
                                                     &table.get(&**key).unwrap(),
                                                     ui,
                                                     (i_group, i_album, *index),
-                                                );
+                                                ));
                                             }
                                         });
                                     }
