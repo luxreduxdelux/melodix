@@ -1,3 +1,5 @@
+-- Refer to the meta.lua file for more documentation.
+
 ---@type plug_in
 local plug_in = {
     name    = "Sample Lua Module",
@@ -5,118 +7,103 @@ local plug_in = {
     from    = "luxreduxdelux",
     version = "1.0.0",
     setting = {
-        setting_button = {
+        button = {
             kind = "Button",
-            data = true,
-            name = "Toggle setting",
-            info = "Toggle setting.",
-            call = "call_setting_button"
+            name = "Sample Button",
+            info = "A sample button.",
+            call = "call_button"
         },
-        setting_toggle = {
+        toggle = {
             kind = "Toggle",
             data = true,
-            name = "Toggle setting",
-            info = "Toggle setting.",
-            call = "call_setting_toggle"
+            name = "Sample Toggle",
+            info = "A sample toggle.",
+            -- NOTE: This is optional and may be absent.
+            call = "call_toggle"
         },
-        setting_toggle = {
-            kind = "Toggle",
-            data = true,
-            name = "Toggle setting",
-            info = "Toggle setting.",
-            call = "call_setting_toggle"
-        }
-    },
-    group   = {
-        search = {
-            kind = "Button",
-            name = "Group Button",
-            info = "Group Button",
-            call = "call_group"
-        }
-    },
-    album   = {
-        search = {
-            kind = "Button",
-            name = "Album Button",
-            info = "Album Button",
-            call = "call_album"
-        }
-    },
-    track   = {
-        search = {
-            kind = "Button",
-            name = "Track Button",
-            info = "Track Button",
-            call = "call_track"
-        }
-    },
-    queue   = {
-        search = {
-            kind = "Button",
-            name = "Queue Button",
-            info = "Queue Button",
-            call = "call_queue"
+        slider = {
+            kind = "Slider",
+            data = 0.0,
+            name = "Sample Slider",
+            info = "A sample slider.",
+            bind = { -1.0, 1.0 },
+            -- NOTE: This is optional and may be absent.
+            call = "call_slider"
+        },
+        record = {
+            kind   = "Record",
+            data   = "foo",
+            name   = "Sample Record",
+            info   = "A sample recorder.",
+            censor = false,
+            -- NOTE: This is optional and may be absent.
+            call   = "call_record"
         }
     }
 }
 
-function plug_in.begin(self)
-    self.discord                = require("melodix_discord")
-    self.setting.cover_art.data = self.discord:get_cover_art()
-    self.library                = melodix.get_library()
+function plug_in.call_button(self)
+    print("Button call-back.")
 end
 
-function plug_in.stop(self)
-    if not self.discord:state_stop() then
-        melodix.set_toast(2, "Could not set Discord state.", 5.0)
-    end
+function plug_in.call_toggle(self)
+    print("Toggle call-back. Data: " .. tostring(self.setting.toggle.data))
+end
+
+function plug_in.call_slider(self)
+    print("Slider call-back. Data: " .. tostring(self.setting.slider.data))
+end
+
+function plug_in.call_record(self)
+    print("Record call-back. Data: " .. self.setting.record.data)
+end
+
+function plug_in.begin(self)
+    print("Module initialization.")
+end
+
+function plug_in.close(self)
+    print("Module de-initialization.")
+end
+
+function plug_in.tick(self)
+    -- This method will be ran on every render frame. A render frame will happen after 1 second, or on user input.
+end
+
+function plug_in.seek(self, time)
+    print("Seek call-back. Seeking to: " .. tostring(time))
 end
 
 function plug_in.play(self, time)
-    local list, position = melodix.get_queue()
-
-    local group = self.library.list_group[list[1][1]]
-    local album = group.list_album[list[1][2]]
-    local track = album.list_track[list[1][3]]
-
-    print(group.name)
-    print(album.name)
-    print(track.name)
-    print(position)
-
     local group, album, track = melodix.get_state()
 
-    if group and album and track then
-        if not self.discord:state_play(group.name, album.name, track.name, time, track.time.secs) then
-            melodix.set_toast(2, "Could not set Discord state.", 5.0)
-        end
-    end
+    print("Play call-back.")
+    print("* Group: " .. group.name)
+    print("* Album: " .. album.name)
+    print("* Track: " .. track.name)
+    print("* Time: " .. tostring(time))
+end
+
+function plug_in.stop(self)
+    print("Stop call-back.")
+end
+
+function plug_in.skip_a(self)
+    print("Skip - call-back.")
+end
+
+function plug_in.skip_b(self)
+    print("Skip + call-back.")
 end
 
 function plug_in.pause(self, time)
     local group, album, track = melodix.get_state()
 
-    if group and album and track then
-        if not self.discord:state_play(group.name, album.name, track.name, 0, 0) then
-            melodix.set_toast(2, "Could not set Discord state.", 5.0)
-        end
-    end
-end
-
-function plug_in.call_cover_art(self)
-    self.discord:set_cover_art(self.setting.cover_art.data)
-end
-
-function plug_in.call_queue(self, group, album, track)
-    print("call_queue")
-
-    local state = melodix.get_state()
-    local group = self.library.list_group[group + 1]
-    local album = group.list_album[album + 1]
-    local track = album.list_track[track + 1]
-
-    print(group.name, album.name, track.name)
+    print("Pause call-back.")
+    print("* Group: " .. group.name)
+    print("* Album: " .. album.name)
+    print("* Track: " .. track.name)
+    print("* Time: " .. tostring(time))
 end
 
 return plug_in

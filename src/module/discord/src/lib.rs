@@ -329,6 +329,13 @@ impl mlua::UserData for Discord {
             Ok(true)
         });
 
+        methods.add_method_mut("get_warn", |_, this, _: ()| Ok(this.setting.warn));
+
+        methods.add_method_mut("set_warn", |_, this, warn: bool| {
+            this.setting.warn = warn;
+            Ok(())
+        });
+
         methods.add_method_mut("get_cover_art", |_, this, _: ()| {
             Ok(this.setting.lock().unwrap().cover)
         });
@@ -337,23 +344,14 @@ impl mlua::UserData for Discord {
             this.setting.lock().unwrap().cover = state;
             Ok(())
         });
-
-        methods.add_method_mut("get_notify_on_failure", |_, this, _: ()| {
-            Ok(this.setting.lock().unwrap().notify)
-        });
-
-        methods.add_method_mut("set_notify_on_failure", |_, this, state: bool| {
-            this.setting.lock().unwrap().notify = state;
-            Ok(())
-        });
     }
 }
 
 #[derive(Serialize, Deserialize)]
 struct Setting {
+    warn: bool,
     cache: HashMap<(String, String), CacheEntry>,
     cover: bool,
-    notify: bool,
 }
 
 impl Setting {
@@ -380,17 +378,15 @@ impl Setting {
 
 impl Default for Setting {
     fn default() -> Self {
-        if let Ok(file) = std::fs::read(Self::get_configuration_path()) {
-            postcard::from_bytes(&file).unwrap_or(Self {
-                cache: HashMap::default(),
-                cover: true,
-                notify: true,
-            })
+        if let Ok(file) = std::fs::read(Self::get_configuration_path())
+            && let Ok(data) = postcard::from_bytes(&file)
+        {
+            data
         } else {
             Self {
+                warn: true,
                 cache: HashMap::default(),
                 cover: true,
-                notify: true,
             }
         }
     }
@@ -400,7 +396,7 @@ impl Drop for Setting {
     fn drop(&mut self) {
         let serialize: Vec<u8> =
             postcard::to_allocvec(&*self).expect("MelodixDiscord: Could not write setting data.");
-        std::fs::write(Self::get_path(), serialize)
+        std::fs::write(Self::get_configuration_path(), serialize)
             .expect("MelodixDiscord: Could not write setting data.");
     }
 }
@@ -414,10 +410,6 @@ enum CacheEntry {
 //================================================================
 
 #[mlua::lua_module]
-fn melodix_discord(lua: &Lua) -> LuaResult<mlua::Table> {
-    let melodix_discord = lua.create_table()?;
-
-    melodix_discord.set("create_discord", lua.create_function(Discord::new)?)?;
-
-    Ok(melodix_discord)
+fn melodix_discord(lua: &Lua) -> LuaResult<Discord> {
+    Ok(Discord::new(lua, ())?)
 }

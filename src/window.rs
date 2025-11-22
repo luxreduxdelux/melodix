@@ -136,6 +136,11 @@ impl Window {
     }
 
     pub fn draw(app: &mut App, context: &egui::Context) -> anyhow::Result<()> {
+        context.request_repaint_after_secs(1.0);
+
+        app.script
+            .call_all(Script::CALL_TICK, app.system.sink.get_pos().as_secs());
+
         Self::handle_close(app, context);
         Self::handle_track(app, context)?;
 
@@ -404,18 +409,6 @@ impl Window {
                             detach = Some((index, index == app.window.queue.1));
                             ui.close();
                         }
-
-                        for script in &mut app.script.script_list {
-                            if let Some(s_queue) = &mut script.0.queue {
-                                ui.collapsing(&script.0.name, |ui| {
-                                    let table: mlua::Table = script.1.get("queue").unwrap();
-
-                                    for (key, value) in s_queue.iter() {
-                                        App::error_result(value.draw(&script.1, &table.get(&**key).unwrap(), ui, (queue.0, queue.1, queue.2)));
-                                    }
-                                });
-                            }
-                        }
                     });
 
                     if row.response().clicked() {
@@ -444,7 +437,7 @@ impl Window {
         Self::draw_panel_layout(app, context);
 
         egui::CentralPanel::default().show(context, |ui| {
-            ui.heading("Melodix (1.0.0)");
+            ui.heading(&format!("Melodix ({})", App::APP_VERSION));
             ui.separator();
 
             ui.label("Made by luxreduxdelux.");
@@ -807,20 +800,6 @@ impl Window {
 
                         row.col(|ui| { ui.add(egui::Label::new(&group.name).selectable(false)); });
 
-                        row.response().context_menu(|ui| {
-                            for script in &mut app.script.script_list {
-                                if let Some(s_group) = &mut script.0.group {
-                                    ui.collapsing(&script.0.name, |ui| {
-                                        let table: mlua::Table = script.1.get("group").unwrap();
-
-                                        for (key, value) in s_group.iter() {
-                                            App::error_result(value.draw(&script.1, &table.get(&**key).unwrap(), ui, (*index,)));
-                                        }
-                                    });
-                                }
-                            }
-                        });
-
                         if row.response().clicked() {
                             app.window.select.0 = (Some(*index), Some(i));
                             app.window.select.1 = (None, None);
@@ -911,25 +890,6 @@ impl Window {
 
                             row.col(|ui| {
                                 ui.add(egui::Label::new(&album.name).selectable(false));
-                            });
-
-                            row.response().context_menu(|ui| {
-                                for script in &mut app.script.script_list {
-                                    if let Some(s_album) = &mut script.0.album {
-                                        ui.collapsing(&script.0.name, |ui| {
-                                            let table: mlua::Table = script.1.get("album").unwrap();
-
-                                            for (key, value) in s_album.iter() {
-                                                App::error_result(value.draw(
-                                                    &script.1,
-                                                    &table.get(&**key).unwrap(),
-                                                    ui,
-                                                    (select, *index),
-                                                ));
-                                            }
-                                        });
-                                    }
-                                }
                             });
 
                             if row.response().clicked() {
@@ -1061,25 +1021,6 @@ impl Window {
                                     );
                                 });
                             }
-
-                            row.response().context_menu(|ui| {
-                                for script in &mut app.script.script_list {
-                                    if let Some(s_track) = &mut script.0.track {
-                                        ui.collapsing(&script.0.name, |ui| {
-                                            let table: mlua::Table = script.1.get("track").unwrap();
-
-                                            for (key, value) in s_track.iter() {
-                                                App::error_result(value.draw(
-                                                    &script.1,
-                                                    &table.get(&**key).unwrap(),
-                                                    ui,
-                                                    (i_group, i_album, *index),
-                                                ));
-                                            }
-                                        });
-                                    }
-                                }
-                            });
 
                             if row.response().clicked() {
                                 app.window.select.2 = (Some(*index), Some(i));

@@ -1,6 +1,6 @@
 [package]
 name    = "melodix"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [profile.release]
@@ -10,14 +10,11 @@ codegen-units = 1
 panic         = "abort"
 strip         = "none"
 
-# dependency list:
-# sudo apt install libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
-
 [profile.dev]
 debug = 0
 
 [dependencies]
-mlua              = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize"] }
+mlua              = { version = "0.10.5", features = ["lua54", "vendored", "send", "serialize", "anyhow"] }
 eframe            = { version = "0.33.2"                               }
 egui-toast        = { git = "https://github.com/LazerSharkk/egui-toast", branch = "main" }
 egui_extras       = { version = "0.33.2", features = ["file", "image", "svg"] }
