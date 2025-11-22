@@ -57,9 +57,6 @@ use std::{io::BufReader, time::Duration};
 
 //================================================================
 
-// TO-DO last.fm plug-in
-// TO-DO allow multi-selection in group/album/track
-
 pub static mut GLOBAL_APP: *mut App = std::ptr::null_mut();
 
 pub struct App {
@@ -71,6 +68,8 @@ pub struct App {
 }
 
 impl App {
+    pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
     pub fn new(context: &CreationContext) -> anyhow::Result<Self> {
         let library = Library::new();
         let setting = Setting::new(context);
@@ -267,7 +266,13 @@ impl App {
             }
         };
 
-        format!("{home}{}", path)
+        let path = format!("{home}{}", path);
+
+        if let Ok(false) = std::fs::exists(&path) {
+            std::fs::create_dir(&path).unwrap();
+        }
+
+        path
     }
 }
 

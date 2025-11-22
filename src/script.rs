@@ -52,7 +52,7 @@ use crate::{app::*, setting::*};
 
 //================================================================
 
-use eframe::egui::{self};
+use eframe::egui::{self, TextEdit};
 use mlua::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,18 +70,19 @@ pub enum SettingData {
     Toggle {
         name: String,
         info: String,
-        call: String,
+        call: Option<String>,
     },
     Slider {
         name: String,
         info: String,
         bind: (f32, f32),
-        call: String,
+        call: Option<String>,
     },
     Record {
         name: String,
         info: String,
-        call: String,
+        censor: bool,
+        call: Option<String>,
     },
 }
 
@@ -109,8 +110,10 @@ impl SettingData {
                 if widget.on_hover_text(info).clicked() {
                     table.set("data", data)?;
 
-                    let call = script.get(&**call)?;
-                    Script::call(script.clone(), call, member);
+                    if let Some(call) = call {
+                        let call = script.get(&**call)?;
+                        Script::call(script.clone(), call, member);
+                    }
                 }
             }
             SettingData::Slider {
@@ -125,20 +128,31 @@ impl SettingData {
                 if widget.on_hover_text(info).drag_stopped() {
                     table.set("data", data)?;
 
-                    let call = script.get(&**call)?;
-                    Script::call(script.clone(), call, member);
+                    if let Some(call) = call {
+                        let call = script.get(&**call)?;
+                        Script::call(script.clone(), call, member);
+                    }
                 }
             }
-            SettingData::Record { name, info, call } => {
+            SettingData::Record {
+                name,
+                info,
+                censor,
+                call,
+            } => {
                 let mut data: String = table.get("data")?;
                 let widget = ui.label(name).id;
-                let widget = ui.text_edit_singleline(&mut data).labelled_by(widget);
+                let widget = ui
+                    .add(TextEdit::singleline(&mut data).password(*censor))
+                    .labelled_by(widget);
 
                 if widget.on_hover_text(info).changed() {
                     table.set("data", data)?;
 
-                    let call = script.get(&**call)?;
-                    Script::call(script.clone(), call, member);
+                    if let Some(call) = call {
+                        let call = script.get(&**call)?;
+                        Script::call(script.clone(), call, member);
+                    }
                 }
             }
         };
@@ -154,23 +168,17 @@ pub struct Module {
     pub from: String,
     pub version: String,
     pub setting: Option<HashMap<String, SettingData>>,
-    pub album: Option<HashMap<String, SettingData>>,
-    pub group: Option<HashMap<String, SettingData>>,
-    pub track: Option<HashMap<String, SettingData>>,
-    pub queue: Option<HashMap<String, SettingData>>,
 }
 
 impl Module {
-    pub fn new(lua: &Lua, path: &str) -> Result<(Self, mlua::Table), ()> {
+    pub fn new(lua: &Lua, path: &str) -> anyhow::Result<(Self, mlua::Table)> {
         // load the Lua source code.
-        let file = std::fs::read_to_string(path).map_err(|_| ())?;
+        let file = std::fs::read_to_string(path)?;
 
         // retrieve the module table.
-        let table = lua.load(file).eval::<mlua::Table>().map_err(|_| ())?;
+        let table = lua.load(file).eval::<mlua::Table>()?;
         let serde = LuaDeserializeOptions::new().deny_unsupported_types(false);
-        let value = lua
-            .from_value_with(mlua::Value::Table(table.clone()), serde)
-            .map_err(|_| ())?;
+        let value = lua.from_value_with(mlua::Value::Table(table.clone()), serde)?;
 
         // return module info and raw Lua table.
         Ok((value, table))
@@ -190,9 +198,10 @@ impl Script {
     pub const DATA_META: &'static str = include_str!("lua/meta.lua");
     pub const CALL_BEGIN: &'static str = "begin";
     pub const CALL_CLOSE: &'static str = "close";
+    pub const CALL_TICK: &'static str = "tick";
     pub const CALL_SEEK: &'static str = "seek";
-    pub const CALL_STOP: &'static str = "stop";
     pub const CALL_PLAY: &'static str = "play";
+    pub const CALL_STOP: &'static str = "stop";
     pub const CALL_SKIP_A: &'static str = "skip_a";
     pub const CALL_SKIP_B: &'static str = "skip_b";
     pub const CALL_PAUSE: &'static str = "pause";
@@ -205,9 +214,16 @@ impl Script {
         if setting.script_allow {
             if let Ok(true) = std::fs::exists(&path) {
                 for file in std::fs::read_dir(&path)? {
-                    let file = file?.path().display().to_string();
-                    if let Ok(module) = Module::new(&lua, &file) {
-                        script_list.push(module);
+                    let file = file?;
+                    let name = file.file_name().display().to_string();
+                    let file = file.path().display().to_string();
+
+                    // Only check if the file is a Lua file and check if it's not a LuaLS meta file.
+                    if file.ends_with("lua") && name != "meta.lua" {
+                        match Module::new(&lua, &file) {
+                            Ok(module) => script_list.push(module),
+                            Err(error) => App::error_result(Err(error)),
+                        }
                     }
                 }
             }
@@ -243,7 +259,7 @@ impl Script {
                 let clone = member.clone();
 
                 if let Err(error) = function.call::<()>((table, clone)) {
-                    App::error(&error.to_string());
+                    App::error(&format!("{}:\n{}", script.0.name, &error.to_string()));
                 }
             }
         }
