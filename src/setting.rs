@@ -75,7 +75,7 @@ impl Setting {
     const PATH_SETTING: &'static str = "setting.data";
 
     pub fn new(context: &CreationContext) -> Self {
-        if let Ok(file) = std::fs::read(App::get_configuration_path(Self::PATH_SETTING)) {
+        if let Ok(file) = std::fs::read(App::get_configuration_path(Self::PATH_SETTING, false)) {
             if let Ok(setting) = postcard::from_bytes::<Self>(&file) {
                 context.egui_ctx.set_zoom_factor(setting.window_scale);
 
@@ -111,6 +111,6 @@ impl Default for Setting {
 impl Drop for Setting {
     fn drop(&mut self) {
         let serialize: Vec<u8> = postcard::to_allocvec(&self).unwrap();
-        std::fs::write(App::get_configuration_path(Self::PATH_SETTING), serialize).unwrap();
+        std::fs::write(App::get_configuration_path(Self::PATH_SETTING, false), serialize).unwrap();
     }
 }
