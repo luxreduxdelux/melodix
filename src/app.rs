@@ -251,7 +251,7 @@ impl App {
         }
     }
 
-    pub fn get_configuration_path(path: &str) -> String {
+    pub fn get_configuration_path(path: &str, folder: bool) -> String {
         let home = {
             if let Some(path) = dirs::config_dir() {
                 let path = format!("{}/melodix/", path.display());
@@ -267,9 +267,14 @@ impl App {
         };
 
         let path = format!("{home}{}", path);
+        let exist = if folder {
+            path.clone()
+        } else {
+            home
+        };
 
-        if let Ok(false) = std::fs::exists(&path) {
-            std::fs::create_dir(&path).unwrap();
+        if let Ok(false) = std::fs::exists(&exist) {
+            std::fs::create_dir(&exist).unwrap();
         }
 
         path

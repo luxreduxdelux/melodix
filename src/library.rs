@@ -75,7 +75,7 @@ impl Library {
     const PATH_LIBRARY: &'static str = "library.data";
 
     pub fn new() -> Self {
-        if let Ok(file) = std::fs::read(App::get_configuration_path(Self::PATH_LIBRARY))
+        if let Ok(file) = std::fs::read(App::get_configuration_path(Self::PATH_LIBRARY, false))
             && let Ok(library) = postcard::from_bytes::<Self>(&file)
         {
             return Self {
@@ -149,7 +149,8 @@ impl Library {
         };
 
         let serialize: Vec<u8> = postcard::to_allocvec(&library).unwrap();
-        std::fs::write(App::get_configuration_path(Self::PATH_LIBRARY), serialize).unwrap();
+
+        std::fs::write(App::get_configuration_path(Self::PATH_LIBRARY, false), serialize).unwrap();
 
         library
     }

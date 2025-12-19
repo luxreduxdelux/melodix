@@ -209,7 +209,7 @@ impl Script {
     pub fn new(setting: &Setting) -> anyhow::Result<Self> {
         let lua = unsafe { Lua::unsafe_new() };
         let mut script_list = Vec::new();
-        let path = App::get_configuration_path(Self::PATH_SCRIPT);
+        let path = App::get_configuration_path(Self::PATH_SCRIPT, true);
 
         if setting.script_allow {
             if let Ok(true) = std::fs::exists(&path) {
@@ -274,7 +274,7 @@ impl Script {
             format!(
                 "{:?};{}?.so",
                 package.get::<mlua::String>("cpath")?,
-                App::get_configuration_path(Self::PATH_SCRIPT)
+                App::get_configuration_path(Self::PATH_SCRIPT, true)
             ),
         )?;
 

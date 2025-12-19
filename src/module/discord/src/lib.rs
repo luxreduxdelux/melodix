@@ -329,13 +329,6 @@ impl mlua::UserData for Discord {
             Ok(true)
         });
 
-        methods.add_method_mut("get_warn", |_, this, _: ()| Ok(this.setting.warn));
-
-        methods.add_method_mut("set_warn", |_, this, warn: bool| {
-            this.setting.warn = warn;
-            Ok(())
-        });
-
         methods.add_method_mut("get_cover_art", |_, this, _: ()| {
             Ok(this.setting.lock().unwrap().cover)
         });
@@ -349,7 +342,6 @@ impl mlua::UserData for Discord {
 
 #[derive(Serialize, Deserialize)]
 struct Setting {
-    warn: bool,
     cache: HashMap<(String, String), CacheEntry>,
     cover: bool,
 }
@@ -384,7 +376,6 @@ impl Default for Setting {
             data
         } else {
             Self {
-                warn: true,
                 cache: HashMap::default(),
                 cover: true,
             }

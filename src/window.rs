@@ -518,11 +518,11 @@ impl Window {
 
             ui.collapsing("Script", |ui| {
                 if ui.button("Open Folder").clicked() {
-                    let _ = opener::open(App::get_configuration_path(Script::PATH_SCRIPT));
+                    let _ = opener::open(App::get_configuration_path(Script::PATH_SCRIPT, true));
                 }
 
                 if ui.button("Save Sample Module").clicked() {
-                    let path = App::get_configuration_path(Script::PATH_SCRIPT);
+                    let path = App::get_configuration_path(Script::PATH_SCRIPT, true);
 
                     let main = std::fs::write(format!("{path}/main.lua"), Script::DATA_MAIN);
                     let meta = std::fs::write(format!("{path}/meta.lua"), Script::DATA_META);
