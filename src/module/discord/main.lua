@@ -82,14 +82,14 @@ function plug_in.play(self, time)
     local group, album, track = melodix.get_state()
 
     if group and album and track then
-        if not self.discord:state_play(group.name, album.name, track.name, time, track.time.secs) then
+        if not self.discord:state_play(group.name, album.name, track.name, time, track.time.secs) and self.setting.warn.data then
             melodix.set_toast(2, "Could not set Discord state.", 5.0)
         end
     end
 end
 
 function plug_in.stop(self)
-    if not self.discord:state_stop() then
+    if not self.discord:state_stop() and self.setting.warn.data then
         melodix.set_toast(2, "Could not set Discord state.", 5.0)
     end
 end
@@ -98,7 +98,7 @@ function plug_in.pause(self, time)
     local group, album, track = melodix.get_state()
 
     if group and album and track then
-        if not self.discord:state_play(group.name, album.name, track.name, 0, 0) then
+        if not self.discord:state_play(group.name, album.name, track.name, 0, 0) and self.setting.warn.data then
             melodix.set_toast(2, "Could not set Discord state.", 5.0)
         end
     end
