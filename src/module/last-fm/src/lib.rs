@@ -88,7 +88,7 @@ impl mlua::UserData for LastFM {
 
                     std::thread::spawn(move || {
                         let song = Scrobble::new(&group, &track, &album);
-                        client.now_playing(&song).unwrap();
+                        client.now_playing(&song);
                     });
                 }
 
@@ -104,7 +104,7 @@ impl mlua::UserData for LastFM {
 
                     std::thread::spawn(move || {
                         let song = Scrobble::new(&group, &track, &album);
-                        client.scrobble(&song).unwrap();
+                        client.scrobble(&song);
                     });
                 }
 
